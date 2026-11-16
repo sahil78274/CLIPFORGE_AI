@@ -31,3 +31,31 @@ To avoid cross-platform Windows drive-letter colon (`C:\...`) escaping issues in
    - `Watermark`: Persistent semi-transparent top-right creator handle/brand badge.
    - `Banner`: Timed intro (`0.0s–2.2s`) and outro (`duration-2.2s–duration`) callout cards.
 2. `renderer.py` executes `ffmpeg` with `cwd=clip_work_dir` and passes relative `ass=captions.ass`, guaranteeing identical behavior on Windows PowerShell, Linux, and Docker containers.
+
+---
+
+## Stage 1a — Google Drive source acquisition
+
+Google Drive imports reuse every downstream stage unchanged. Before the Python processor is
+spawned, the worker performs a recoverable acquisition step:
+
+1. Re-verify the job's `driveImport.selectionId` against the user's own OAuth credentials
+   (`files.get` with the encrypted-refresh-token-derived access token).
+2. Stream `files.get?alt=media` in HTTP `Range` chunks (default 8 MiB) straight to
+   `TEMP_WORKING_DIR/job_<jobId>/drive_source/*.part` — the file is never buffered in RAM.
+   Resume metadata (file id + modified time + ETag + expected total) lets an interrupted
+   chunk continue at the last verified byte; 408/425/429/5xx are retried with exponential
+   backoff.
+3. Validate byte count, Drive SHA-256/MD5 checksum (when provided), and FFprobe stream/size;
+   reject anything beyond `MAX_VIDEO_DURATION_SEC` (36,000 s).
+4. Copy the validated file into storage, create the `Video` record, and delete the temporary
+   download immediately.
+5. Hand the local path to the existing `job_input.json` chunk plan, checkpointing, global
+   timestamps, boundary de-duplication, credit settlement, and download/thumbnail rendering.
+
+Failures are classified: non-retryable errors (`GOOGLE_DRIVE_ACCESS_DENIED`,
+`GOOGLE_DRIVE_FILE_NOT_FOUND`, `GOOGLE_DRIVE_NOT_VIDEO`, `GOOGLE_DRIVE_REAUTH_REQUIRED`,
+`VIDEO_DURATION_LIMIT_EXCEEDED`, …) fail fast and refund 100 % of reserved credits; transient
+errors resume from the saved chunk checkpoint. The worker deletes the whole per-job temp
+directory in a `finally` block, so partial downloads never leak. `POST /api/v1/jobs/:id/retry`
+replays the same `driveImport` descriptor.

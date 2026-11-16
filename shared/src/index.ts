@@ -36,6 +36,83 @@ export const MAX_SUPPORTED_VIDEO_DURATION_SEC = 36000; // 10 hours
 export const DEFAULT_CHUNK_DURATION_SEC = 600; // 10-minute chunks
 export const DEFAULT_CHUNK_OVERLAP_SEC = 5; // 5-second boundary overlap
 
+/* -------------------------------------------------------------------------- */
+/* Direct Google Drive video import (OAuth 2.0 + official Google Picker API)  */
+/* -------------------------------------------------------------------------- */
+
+/** Minimum Drive permission required by ClipForge AI. Per-file access only. */
+export const GOOGLE_DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+
+/** Scopes requested by the dedicated "Connect Google Drive" OAuth flow. */
+export const GOOGLE_DRIVE_OAUTH_SCOPES = [
+  'openid',
+  'email',
+  'profile',
+  GOOGLE_DRIVE_FILE_SCOPE,
+] as const;
+
+/** Video containers accepted from Google Drive (MP4, MOV, WebM, MKV, M4V). */
+export const GOOGLE_DRIVE_SUPPORTED_MIME_TYPES = [
+  'video/mp4',
+  'video/quicktime',
+  'video/webm',
+  'video/x-matroska',
+  'video/x-m4v',
+] as const;
+
+export type GoogleDriveSupportedMimeType =
+  (typeof GOOGLE_DRIVE_SUPPORTED_MIME_TYPES)[number];
+
+/** Streamed-download ceiling (20 GiB) — supports 10-hour high-bitrate exports. */
+export const MAX_GOOGLE_DRIVE_FILE_BYTES = 20 * 1024 * 1024 * 1024;
+
+export interface GoogleDrivePickerConfig {
+  oauthConfigured: boolean;
+  pickerConfigured: boolean;
+  /** Browser-safe, HTTP-referrer-restricted Picker API key (never the OAuth client secret). */
+  apiKey: string;
+  /** Google Cloud project number, used as the Picker App ID. */
+  projectNumber: string;
+  oauthClientId: string;
+  redirectUri: string;
+  scopes: string[];
+  supportedMimeTypes: string[];
+  maxFileSizeBytes: number;
+  maxDurationSec: number;
+  setupInstructions?: string;
+}
+
+export interface GoogleDriveConnectionStatus {
+  oauthConfigured: boolean;
+  pickerConfigured: boolean;
+  connected: boolean;
+  email?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  googleAccountId?: string;
+  scopes?: string[];
+  hasRequiredScope: boolean;
+  connectedAt?: string;
+  status?: 'active' | 'revoked';
+  setupInstructions?: string;
+}
+
+export interface GoogleDriveSelectedFile {
+  /** Opaque server-side selection handle — never a raw Drive file ID from the client. */
+  selectionId: string;
+  fileId: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  durationSec: number | null;
+  width: number | null;
+  height: number | null;
+  /** Same-origin backend proxy for the Drive thumbnail (access token never exposed). */
+  thumbnailUrl: string | null;
+  modifiedTime: string | null;
+  expiresAt: string;
+}
+
 export const DURATION_PRESETS = [
   { id: '15-30', label: '15–30 seconds', minSec: 15, maxSec: 30 },
   { id: '30-45', label: '30–45 seconds', minSec: 30, maxSec: 45 },

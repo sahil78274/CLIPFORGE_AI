@@ -72,6 +72,25 @@ Authentication uses an HTTP-only signed JWT cookie (`clipforge_access_token`) or
 - `POST /api/v1/jobs/:id/cancel` *(Auth)* — Terminates running Python/FFmpeg subprocess and releases reserved credits.
 - `POST /api/v1/jobs/:id/retry` *(Auth)* — Re-reserves credits and queues a fresh job for a failed/cancelled job.
 
+## 6b. Google Drive Import (`/api/v1/google-drive`)
+
+Minimum scope: `https://www.googleapis.com/auth/drive.file` (+ `openid email profile`).
+Refresh tokens are encrypted with AES-256-GCM at rest; access tokens are never persisted and
+never returned except as a short-lived Picker token. No endpoint returns the OAuth client secret.
+
+- `GET /api/v1/google-drive/config` — Public, browser-safe Picker configuration: `apiKey`, `projectNumber`, `oauthClientId`, `redirectUri`, `scopes`, `supportedMimeTypes`, `maxFileSizeBytes`, `maxDurationSec`, plus `oauthConfigured` / `pickerConfigured` and setup guidance. Never includes the client secret.
+- `POST /api/v1/google-drive/oauth/authorize` *(Auth)* — Body: `{ redirectPath?, loginHint? }`. Returns `{ authorizationUrl, expiresAt }`. Signed, single-use, 10-minute state; `access_type=offline`, `prompt=consent`, no `include_granted_scopes`.
+- `GET /api/v1/google-drive/oauth/callback` — Google redirect target (`GOOGLE_REDIRECT_URI`). Exchanges the authorization code server-side, verifies `drive.file` was granted, requires an offline refresh token, fetches the OIDC profile, encrypts and upserts the refresh token. HTML callers are redirected to the client with `driveConnected=1` or `driveError=cancelled|<message>`; `?format=json` returns JSON. Also mounted at `/api/v1/youtube/oauth/google/callback` as a dispatcher.
+- `GET /api/v1/google-drive/status` *(Auth)* — `connected`, `email`, `displayName`, `avatarUrl`, `scopes`, `hasRequiredScope`, `status` (`active` | `revoked`).
+- `POST /api/v1/google-drive/oauth/disconnect` *(Auth)* — Revokes the token at Google and deletes the connection, selections, and pending states.
+- `GET /api/v1/google-drive/picker-token` *(Auth)* — `{ accessToken, expiresAt, expiresInSec, scopes }` for the official Picker widget only (`Cache-Control: no-store`). 401 `GOOGLE_DRIVE_REAUTH_REQUIRED` when revoked.
+- `POST /api/v1/google-drive/files/select` *(Auth)* — Body: `{ fileId }` from the Picker. Re-verifies with the user's own token (`404 GOOGLE_DRIVE_FILE_NOT_FOUND`, `403 GOOGLE_DRIVE_ACCESS_DENIED`, `400 GOOGLE_DRIVE_NOT_VIDEO`), then returns an opaque user-bound selection: `{ selectionId, fileId, name, mimeType, sizeBytes, durationSec, width, height, thumbnailUrl, modifiedTime, expiresAt }`.
+- `GET /api/v1/google-drive/selections/:id` *(Auth)* — Re-reads a selection. Another user's selection returns the same `404 GOOGLE_DRIVE_SELECTION_NOT_FOUND`; expired returns `400 GOOGLE_DRIVE_SELECTION_EXPIRED`.
+- `GET /api/v1/google-drive/selections/:id/thumbnail` *(Auth)* — Same-origin proxied Drive thumbnail (host allowlist, access token never exposed).
+- `POST /api/v1/google-drive/generate` *(Auth)* — Body: `{ selectionId, title?, settings?, autoStart? }`. Re-verifies the file, computes credits/chunk plan, reserves credits, creates a `Project` (`sourcePlatform: 'google_drive'`, `googleDriveMetadata`) and a `ProcessingJob` (`driveImport`), and enqueues. Returns `{ project, job, file, estimatedCredits, chunkPlan }`.
+
+Rate limits: 20/15 min for OAuth endpoints, 120/15 min for Drive metadata endpoints, plus the standard job limiter on `/generate`.
+
 ## 7. Credit Wallet & Payments (`/api/v1/wallet`, `/api/v1/payments`)
 - `GET /api/v1/wallet` *(Auth)* — Current `availableCredits`, `reservedCredits`, and lifetime totals.
 - `GET /api/v1/wallet/transactions` *(Auth)* — Paginated immutable `CreditTransaction` ledger (`type` filter optional).

@@ -114,15 +114,32 @@ const envSchema = z.object({
   YOUTUBE_OEMBED_ENDPOINT: z.string().default('https://www.youtube.com/oembed'),
   GOOGLE_CLIENT_ID: z.string().optional().default(''),
   GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
+  // Canonical Google OAuth 2.0 callback for both the Drive import and legacy YouTube flows.
+  // This route is implemented in server/src/routes/index.ts (apiV1Router -> googleDriveRouter).
   GOOGLE_REDIRECT_URI: z
     .string()
-    .default('http://localhost:4000/api/v1/youtube/oauth/google/callback'),
+    .default('http://localhost:4000/api/v1/google-drive/oauth/callback'),
+  GOOGLE_API_KEY: z.string().optional().default(''),
+  GOOGLE_PROJECT_NUMBER: z.string().optional().default(''),
   GOOGLE_OAUTH_AUTH_URL: z.string().default('https://accounts.google.com/o/oauth2/v2/auth'),
   GOOGLE_OAUTH_TOKEN_URL: z.string().default('https://oauth2.googleapis.com/token'),
   GOOGLE_OAUTH_USERINFO_URL: z.string().default('https://www.googleapis.com/oauth2/v2/userinfo'),
   GOOGLE_OAUTH_REVOKE_URL: z.string().default('https://oauth2.googleapis.com/revoke'),
   GOOGLE_DRIVE_API_BASE_URL: z.string().default('https://www.googleapis.com/drive/v3'),
   GOOGLE_TOKEN_ENCRYPTION_KEY: z.string().optional().default(''),
+  GOOGLE_DRIVE_MAX_FILE_BYTES: z.coerce
+    .number()
+    .int()
+    .min(1024 * 1024)
+    .max(50 * 1024 * 1024 * 1024)
+    .default(20 * 1024 * 1024 * 1024),
+  GOOGLE_DRIVE_DOWNLOAD_CHUNK_BYTES: z.coerce
+    .number()
+    .int()
+    .min(256 * 1024)
+    .max(64 * 1024 * 1024)
+    .default(8 * 1024 * 1024),
+  GOOGLE_DRIVE_SELECTION_TTL_SEC: z.coerce.number().int().min(300).max(86400).default(21600),
   YOUTUBE_MEDIA_ADAPTER: z
     .enum(['composite', 'owner_export_dir', 'authorized_http_provider', 'custom_command'])
     .default('composite'),
@@ -174,6 +191,21 @@ const resolvedJwtSecret =
         .createHash('sha256')
         .update(`clipforge-dev-secret-${path.resolve(__dirname, '../../..')}`)
         .digest('hex');
+
+// Refresh tokens are encrypted at rest with AES-256-GCM. In production require an
+// explicit, high-entropy key instead of silently deriving one from the JWT secret.
+if (
+  isProd &&
+  parsed.GOOGLE_CLIENT_ID &&
+  parsed.GOOGLE_CLIENT_SECRET &&
+  (!parsed.GOOGLE_TOKEN_ENCRYPTION_KEY ||
+    parsed.GOOGLE_TOKEN_ENCRYPTION_KEY.length < 32 ||
+    parsed.GOOGLE_TOKEN_ENCRYPTION_KEY.includes('replace-with'))
+) {
+  throw new Error(
+    'FATAL CONFIG ERROR: GOOGLE_TOKEN_ENCRYPTION_KEY must be a >=32-character random secret when Google OAuth is configured in production.'
+  );
+}
 
 const resolvedDownloadSecret =
   parsed.DOWNLOAD_SIGNING_SECRET &&

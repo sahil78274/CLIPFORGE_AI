@@ -90,3 +90,14 @@ npm test
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Optional | *(empty)* | Razorpay INR API keys. Marked `NOT CONFIGURED` if omitted. |
 | `RAZORPAY_WEBHOOK_SECRET` | Optional | *(empty)* | Razorpay webhook signing secret for `/api/v1/payments/webhook`. |
 | `PAYMENT_SANDBOX_SIMULATOR` | No | `true` (dev only) | Enables labelled dev sandbox payment simulator in non-production when live Razorpay keys are absent. |
+| `GOOGLE_CLIENT_ID` | For Google Drive import | *(empty)* | Google Cloud OAuth 2.0 **Web application** client ID. |
+| `GOOGLE_CLIENT_SECRET` | For Google Drive import | *(empty)* | OAuth client secret. Server-side only — never returned by any API. |
+| `GOOGLE_REDIRECT_URI` | For Google Drive import | `http://localhost:4000/api/v1/google-drive/oauth/callback` | Must byte-match an Authorized redirect URI in Google Cloud Console. |
+| `GOOGLE_API_KEY` | For Google Picker | *(empty)* | Browser-restricted Picker API key (HTTP referrer restricted, Picker API only). |
+| `GOOGLE_PROJECT_NUMBER` | For Google Picker | *(empty)* | Google Cloud project number, used as the Picker `setAppId`. |
+| `GOOGLE_TOKEN_ENCRYPTION_KEY` | Yes in production | *(dev derives from JWT secret)* | AES-256-GCM key material (>= 32 random chars) for encrypted refresh tokens at rest. |
+| `GOOGLE_DRIVE_MAX_FILE_BYTES` | No | `21474836480` (20 GiB) | Maximum accepted Drive video size. |
+| `GOOGLE_DRIVE_DOWNLOAD_CHUNK_BYTES` | No | `8388608` (8 MiB) | HTTP Range chunk size for streamed/resumable Drive downloads. |
+| `GOOGLE_DRIVE_SELECTION_TTL_SEC` | No | `21600` (6h) | Lifetime of a verified Picker selection handle before re-selection is required. |
+
+> Full Google Cloud Console + local workflow instructions: [`docs/GOOGLE_DRIVE_SETUP.md`](./GOOGLE_DRIVE_SETUP.md).

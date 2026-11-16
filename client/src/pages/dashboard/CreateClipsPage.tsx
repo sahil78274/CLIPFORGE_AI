@@ -6,15 +6,18 @@ import {
   Captions,
   CheckCircle2,
   Clock,
+  Cloud,
   Coins,
   Download,
   ExternalLink,
   FileVideo,
   Film,
   Globe,
+  HardDrive,
   Layers,
   Play,
   RotateCcw,
+  ShieldCheck,
   Sliders,
   Sparkles,
   StopCircle,
@@ -49,6 +52,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { useToastStore } from '../../stores/toastStore';
 import type {
   ClipItem,
+  GoogleDriveSelectedFile,
   GoogleDriveVideoFile,
   UrlCheckResult,
   YouTubeFetchResponse,
@@ -56,8 +60,9 @@ import type {
 import { formatBytes, formatDuration } from '../../utils/format';
 import { cn } from '../../utils/cn';
 import { useWalletRefresh } from '../../hooks/useWalletRefresh';
+import { useGooglePicker } from '../../hooks/useGooglePicker';
 
-type SourceTab = 'youtube' | 'upload' | 'url';
+type SourceTab = 'youtube' | 'upload' | 'url' | 'drive';
 
 export const CreateClipsPage: React.FC = () => {
   const [searchParams] = useSearchParams();
@@ -69,7 +74,9 @@ export const CreateClipsPage: React.FC = () => {
   const paramTab = searchParams.get('tab');
   const initialUrl = searchParams.get('url') || '';
   const initialTab: SourceTab =
-    paramTab === 'upload'
+    paramTab === 'drive'
+      ? 'drive'
+      : paramTab === 'upload'
       ? 'upload'
       : paramTab === 'url'
       ? 'url'
@@ -112,6 +119,15 @@ export const CreateClipsPage: React.FC = () => {
   const [ytReport, setYtReport] = useState<YouTubeFetchResponse | null>(null);
   const [startingYouTubeJob, setStartingYouTubeJob] = useState(false);
 
+  // Direct "Import from Google Drive" (OAuth 2.0 + official Google Picker) state
+  const [driveSelection, setDriveSelection] = useState<GoogleDriveSelectedFile | null>(null);
+  const [connectingDrive, setConnectingDrive] = useState(false);
+  const [disconnectingDrive, setDisconnectingDrive] = useState(false);
+  const [openingDrivePicker, setOpeningDrivePicker] = useState(false);
+  const [startingDriveJob, setStartingDriveJob] = useState(false);
+  const [driveFlowError, setDriveFlowError] = useState<string | null>(null);
+  const { openPicker } = useGooglePicker();
+
   // Live inline processing & generated clips preview/download state
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
@@ -137,6 +153,26 @@ export const CreateClipsPage: React.FC = () => {
     googleOAuthQuery.data?.connected && googleOAuthQuery.data?.hasDriveScope
   );
 
+  const driveConfigQuery = useQuery({
+    queryKey: ['google-drive-picker-config'],
+    queryFn: () => api.googleDrive.config(),
+    enabled: tab === 'drive',
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const driveStatusQuery = useQuery({
+    queryKey: ['google-drive-connection-status'],
+    queryFn: () => api.googleDrive.status(),
+    enabled: tab === 'drive',
+  });
+
+  const driveConnected = Boolean(
+    driveStatusQuery.data?.connected && driveStatusQuery.data?.hasRequiredScope
+  );
+  const drivePickerReady = Boolean(
+    driveConfigQuery.data?.pickerConfigured && driveConfigQuery.data?.oauthConfigured
+  );
+
   const driveFilesQuery = useQuery({
     queryKey: [
       'google-drive-video-files',
@@ -155,6 +191,37 @@ export const CreateClipsPage: React.FC = () => {
   useEffect(() => {
     const googleConnectedFlag = searchParams.get('googleConnected');
     const googleErrorMsg = searchParams.get('googleError');
+    const driveConnectedFlag = searchParams.get('driveConnected');
+    const driveErrorMsg = searchParams.get('driveError');
+    if (driveConnectedFlag === '1') {
+      setTab('drive');
+      pushToast({
+        type: 'success',
+        title: 'Google Drive connected',
+        description:
+          'You can now select a video with the official Google Picker. Only the file you pick is shared with ClipForge.',
+      });
+      void driveStatusQuery.refetch();
+      const next = new URLSearchParams(searchParams);
+      next.delete('driveConnected');
+      navigate(`/dashboard/create?${next.toString()}`, { replace: true });
+    } else if (driveErrorMsg) {
+      setTab('drive');
+      pushToast({
+        type: 'error',
+        title:
+          driveErrorMsg === 'cancelled'
+            ? 'Google Drive connection cancelled'
+            : 'Google Drive connection failed',
+        description:
+          driveErrorMsg === 'cancelled'
+            ? 'No permissions were granted and nothing was stored.'
+            : driveErrorMsg,
+      });
+      const next = new URLSearchParams(searchParams);
+      next.delete('driveError');
+      navigate(`/dashboard/create?${next.toString()}`, { replace: true });
+    }
     if (googleConnectedFlag === '1') {
       pushToast({
         type: 'success',
@@ -176,7 +243,7 @@ export const CreateClipsPage: React.FC = () => {
       next.delete('googleError');
       navigate(`/dashboard/create?${next.toString()}`, { replace: true });
     }
-  }, [searchParams, navigate, pushToast, googleOAuthQuery]);
+  }, [searchParams, navigate, pushToast, googleOAuthQuery, driveStatusQuery]);
 
   const liveJobQuery = useQuery({
     queryKey: ['inline-active-job', activeJobId],
@@ -217,6 +284,10 @@ export const CreateClipsPage: React.FC = () => {
     typeof ytReport?.video.durationSec === 'number' &&
     ytReport.video.durationSec > 0
       ? ytReport.video.durationSec
+      : tab === 'drive' &&
+        typeof driveSelection?.durationSec === 'number' &&
+        driveSelection.durationSec > 0
+      ? driveSelection.durationSec
       : detectedDurationSec;
 
   const estimatedCredits = estimateProcessingCredits(
@@ -368,6 +439,107 @@ export const CreateClipsPage: React.FC = () => {
       });
     } finally {
       setDisconnectingGoogle(false);
+    }
+  };
+
+  const handleConnectDrive = async () => {
+    setConnectingDrive(true);
+    setDriveFlowError(null);
+    try {
+      const res = await api.googleDrive.authorize({
+        redirectPath: '/dashboard/create?tab=drive',
+      });
+      window.location.href = res.authorizationUrl;
+    } catch (err: any) {
+      setConnectingDrive(false);
+      setDriveFlowError(
+        err?.message ||
+          'Google Drive OAuth is unavailable. Verify GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET and GOOGLE_REDIRECT_URI.'
+      );
+    }
+  };
+
+  const handleDisconnectDrive = async () => {
+    setDisconnectingDrive(true);
+    try {
+      await api.googleDrive.disconnect();
+      setDriveSelection(null);
+      await driveStatusQuery.refetch();
+      pushToast({
+        type: 'info',
+        title: 'Google Drive disconnected',
+        description: 'The stored refresh token was revoked and deleted.',
+      });
+    } catch (err: any) {
+      pushToast({ type: 'error', title: 'Disconnect failed', description: err?.message });
+    } finally {
+      setDisconnectingDrive(false);
+    }
+  };
+
+  const handleOpenDrivePicker = async () => {
+    setDriveFlowError(null);
+    setOpeningDrivePicker(true);
+    try {
+      const config = driveConfigQuery.data || (await api.googleDrive.config());
+      // Short-lived access token, used only by the official Picker widget.
+      const { accessToken } = await api.googleDrive.pickerToken();
+      const picked = await openPicker({
+        apiKey: config.apiKey,
+        projectNumber: config.projectNumber,
+        oauthToken: accessToken,
+        mimeTypes: config.supportedMimeTypes,
+      });
+      if (!picked) return;
+
+      // The server re-verifies access with the stored refresh token before
+      // returning an opaque, user-bound selection handle.
+      const selection = await api.googleDrive.selectFile(picked.id);
+      setDriveSelection(selection);
+      if (selection.durationSec) setDetectedDurationSec(selection.durationSec);
+      if (!title.trim()) setTitle(selection.name.replace(/\.[^.]+$/, ''));
+      pushToast({
+        type: 'success',
+        title: 'Drive video verified',
+        description: `${selection.name} — ${selection.mimeType}`,
+      });
+    } catch (err: any) {
+      setDriveFlowError(err?.message || 'Could not select a Google Drive video.');
+    } finally {
+      setOpeningDrivePicker(false);
+    }
+  };
+
+  const handleDriveGenerateStart = async () => {
+    if (!driveSelection) return;
+    setStartingDriveJob(true);
+    setDriveFlowError(null);
+    setSelectedPreviewClip(null);
+    try {
+      const res = await api.googleDrive.generate({
+        selectionId: driveSelection.selectionId,
+        title: title.trim() || undefined,
+        settings,
+        autoStart: true,
+      });
+      await refreshWallet();
+      setActiveProjectId(res.project._id);
+      if (res.job?._id) setActiveJobId(res.job._id);
+      pushToast({
+        type: 'success',
+        title: 'Google Drive import started',
+        description:
+          'The file is streamed to temporary storage, then transcribed and clipped in chunks.',
+      });
+    } catch (err: any) {
+      setDriveFlowError(err?.message || 'Could not start Google Drive clip generation.');
+      pushToast({
+        type: 'error',
+        title: 'Could not start Google Drive import',
+        description: err?.message,
+      });
+    } finally {
+      setStartingDriveJob(false);
     }
   };
 
@@ -577,8 +749,8 @@ export const CreateClipsPage: React.FC = () => {
         <div>
           <h1 className="text-2xl font-bold text-white tracking-tight">Create Short Clips</h1>
           <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-            Paste a YouTube link (up to 10 hours with chunked AI processing), upload a video file,
-            or import a direct MP4 stream.
+            Upload a video file, import one directly from Google Drive, paste a YouTube link, or
+            stream a direct media URL — all up to 10 hours with chunked AI processing.
           </p>
         </div>
         <Badge variant="brand">Up to 10h Chunked Pipeline</Badge>
@@ -591,7 +763,10 @@ export const CreateClipsPage: React.FC = () => {
             <div className="space-y-1">
               <div className="flex flex-wrap items-center gap-2.5">
                 <span className="text-base font-semibold text-white">
-                  {title || ytReport?.video.title || 'YouTube AI Clip Generation'}
+                  {title ||
+                    ytReport?.video.title ||
+                    driveSelection?.name ||
+                    'AI Clip Generation'}
                 </span>
                 <Badge
                   variant={
@@ -879,6 +1054,18 @@ export const CreateClipsPage: React.FC = () => {
                   )}
                 >
                   <Globe className="w-3.5 h-3.5" /> Direct Media URL
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTab('drive')}
+                  className={cn(
+                    'px-3.5 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center gap-1.5',
+                    tab === 'drive'
+                      ? 'bg-[#7C5CFF] text-white'
+                      : 'text-zinc-400 hover:text-white'
+                  )}
+                >
+                  <Cloud className="w-3.5 h-3.5" /> Import from Google Drive
                 </button>
               </div>
             </div>
@@ -1409,6 +1596,186 @@ export const CreateClipsPage: React.FC = () => {
                   </div>
                 )}
               </div>
+            ) : tab === 'drive' ? (
+              <div className="space-y-4">
+                <Input
+                  label="Project Title"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="e.g., 10-Hour Conference Keynote Archive"
+                />
+
+                {/* Step 1: connection */}
+                {!driveConfigQuery.data?.oauthConfigured ||
+                !driveConfigQuery.data?.pickerConfigured ? (
+                  <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 leading-relaxed space-y-1.5">
+                    <div className="flex items-center gap-2 font-semibold">
+                      <AlertTriangle className="w-4 h-4" /> Google Drive integration is not configured
+                    </div>
+                    <p>
+                      Set <code className="font-mono">GOOGLE_CLIENT_ID</code>,{' '}
+                      <code className="font-mono">GOOGLE_CLIENT_SECRET</code>,{' '}
+                      <code className="font-mono">GOOGLE_REDIRECT_URI</code>,{' '}
+                      <code className="font-mono">GOOGLE_API_KEY</code>,{' '}
+                      <code className="font-mono">GOOGLE_PROJECT_NUMBER</code> and{' '}
+                      <code className="font-mono">GOOGLE_TOKEN_ENCRYPTION_KEY</code> on the server,
+                      then restart the backend.
+                    </p>
+                    {driveConfigQuery.data?.setupInstructions && (
+                      <p className="text-[11px] text-amber-200/80">
+                        {driveConfigQuery.data.setupInstructions}
+                      </p>
+                    )}
+                  </div>
+                ) : driveConnected && driveStatusQuery.data ? (
+                  <div className="rounded-xl border border-white/10 bg-[#0D0D14] p-3.5 flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      <div className="w-8 h-8 rounded-lg bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-300 shrink-0">
+                        <ShieldCheck className="w-4 h-4" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-white flex items-center gap-2">
+                          Google Drive connected
+                          <Badge variant="success">
+                            {driveStatusQuery.data.email ||
+                              driveStatusQuery.data.displayName ||
+                              'authorized account'}
+                          </Badge>
+                        </div>
+                        <p className="text-[11px] text-zinc-500 truncate">
+                          Scope:{' '}
+                          <code className="font-mono text-zinc-400">
+                            https://www.googleapis.com/auth/drive.file
+                          </code>{' '}
+                          — only files you explicitly pick are shared.
+                        </p>
+                      </div>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      loading={disconnectingDrive}
+                      onClick={handleDisconnectDrive}
+                      leftIcon={<X className="w-3.5 h-3.5" />}
+                    >
+                      Disconnect
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-white/10 bg-[#0D0D14] p-3.5 space-y-2.5">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                      <Cloud className="w-4 h-4 text-[#A58DFF]" /> Step 1 — Connect Google Drive
+                    </div>
+                    <p className="text-[11px] text-zinc-500">
+                      ClipForge requests offline access with the minimal{' '}
+                      <code className="font-mono text-zinc-400">drive.file</code> scope. Refresh
+                      tokens are encrypted at rest on the server; access tokens are never persisted.
+                    </p>
+                    <Button
+                      size="sm"
+                      loading={connectingDrive}
+                      onClick={handleConnectDrive}
+                      leftIcon={<Cloud className="w-3.5 h-3.5" />}
+                    >
+                      Connect Google Drive
+                    </Button>
+                  </div>
+                )}
+
+                {/* Step 2: picker + selected file */}
+                <div className="rounded-xl border border-white/10 bg-[#0D0D14] p-3.5 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 text-xs font-semibold text-white">
+                      <HardDrive className="w-4 h-4 text-[#A58DFF]" /> Step 2 — Select one video
+                      from Drive
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        disabled={!driveConnected}
+                        loading={openingDrivePicker}
+                        onClick={handleOpenDrivePicker}
+                        leftIcon={<Film className="w-3.5 h-3.5" />}
+                      >
+                        Select Video from Drive
+                      </Button>
+                      {driveSelection && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setDriveSelection(null);
+                            setDriveFlowError(null);
+                          }}
+                          leftIcon={<X className="w-3.5 h-3.5" />}
+                        >
+                          Clear
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-zinc-500">
+                    Supported: MP4, MOV, WebM, MKV, M4V — up to{' '}
+                    {formatBytes(driveConfigQuery.data?.maxFileSizeBytes || 0)} and{' '}
+                    {Math.round(
+                      (driveConfigQuery.data?.maxDurationSec || maxDurationSec) / 3600
+                    )}{' '}
+                    hours per video.
+                  </p>
+
+                  {driveSelection ? (
+                    <div className="flex flex-col sm:flex-row items-start gap-3 p-3 rounded-xl bg-emerald-500/[0.07] border border-emerald-500/25">
+                      {driveSelection.thumbnailUrl ? (
+                        <img
+                          src={driveSelection.thumbnailUrl}
+                          alt={`Drive thumbnail for ${driveSelection.name}`}
+                          className="w-28 h-16 rounded-lg object-cover border border-white/10 bg-black/40"
+                        />
+                      ) : (
+                        <div className="w-28 h-16 rounded-lg border border-white/10 bg-black/40 flex items-center justify-center text-zinc-500">
+                          <Film className="w-5 h-5" />
+                        </div>
+                      )}
+                      <div className="min-w-0 space-y-0.5">
+                        <div className="text-sm font-medium text-white break-words">
+                          {driveSelection.name}
+                        </div>
+                        <div className="text-[11px] text-zinc-400 font-mono break-all">
+                          {driveSelection.mimeType}
+                          {driveSelection.sizeBytes != null
+                            ? ` • ${formatBytes(driveSelection.sizeBytes)}`
+                            : ''}
+                          {driveSelection.durationSec != null
+                            ? ` • ${formatDuration(driveSelection.durationSec)}`
+                            : ''}
+                        </div>
+                        <div className="text-[11px] text-zinc-500">
+                          Server-verified selection • expires{' '}
+                          {new Date(driveSelection.expiresAt).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="text-[11px] text-zinc-500 p-3 rounded-lg border border-dashed border-white/10 text-center">
+                      No Drive video selected yet.
+                    </div>
+                  )}
+
+                  {driveFlowError && (
+                    <div className="p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-[11px] text-red-200">
+                      {driveFlowError}
+                    </div>
+                  )}
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.07] text-xs text-zinc-400 leading-relaxed">
+                  Long videos (up to 10 hours) are processed in overlapping chunks with global
+                  timestamps and boundary de-duplication. Interrupted jobs resume from the last
+                  saved checkpoint and credits are refunded automatically on failure.
+                </div>
+              </div>
             ) : (
               <div className="space-y-4">
                 <Input
@@ -1894,6 +2261,22 @@ export const CreateClipsPage: React.FC = () => {
                 leftIcon={<Sparkles className="w-4 h-4" />}
               >
                 Upload & Generate Clips
+              </Button>
+            ) : tab === 'drive' ? (
+              <Button
+                className="w-full"
+                size="lg"
+                disabled={
+                  !driveSelection ||
+                  !driveConnected ||
+                  startingDriveJob ||
+                  !hasEnoughCredits
+                }
+                loading={startingDriveJob}
+                onClick={handleDriveGenerateStart}
+                leftIcon={<Sparkles className="w-4 h-4" />}
+              >
+                Generate Clips from Drive Video
               </Button>
             ) : (
               <Button

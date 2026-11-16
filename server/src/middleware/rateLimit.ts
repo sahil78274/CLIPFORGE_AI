@@ -31,6 +31,36 @@ export const authRateLimiter = rateLimit({
   },
 });
 
+/** OAuth authorize/callback/disconnect: tight limit against state brute force & token churn. */
+export const googleOAuthLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isTest ? 1000 : 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'GOOGLE_OAUTH_RATE_LIMITED',
+      message: 'Too many Google connection attempts. Please wait 15 minutes and try again.',
+    },
+  },
+});
+
+/** Drive metadata / picker-token / file-selection endpoints. */
+export const googleDriveApiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isTest ? 1000 : 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'GOOGLE_DRIVE_RATE_LIMITED',
+      message: 'Too many Google Drive requests. Please slow down and retry shortly.',
+    },
+  },
+});
+
 export const uploadAndJobLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: isTest ? 1000 : 60,

@@ -6,6 +6,9 @@ import { CreditWallet } from './CreditWallet';
 import { CreditTransaction } from './CreditTransaction';
 import { CreditPackage, SystemConfig, type ISystemConfig } from './SystemConfig';
 import { UserGoogleIntegration } from './UserGoogleIntegration';
+import { UserGoogleDriveConnection } from './UserGoogleDriveConnection';
+import { GoogleDriveOAuthState } from './GoogleDriveOAuthState';
+import { GoogleDriveFileSelection } from './GoogleDriveFileSelection';
 
 export * from './User';
 export * from './Project';
@@ -20,6 +23,9 @@ export * from './AdminAuditLog';
 export * from './PasswordResetToken';
 export * from './SystemConfig';
 export * from './UserGoogleIntegration';
+export * from './UserGoogleDriveConnection';
+export * from './GoogleDriveOAuthState';
+export * from './GoogleDriveFileSelection';
 
 export async function getOrCreateSystemConfig(): Promise<ISystemConfig> {
   let cfg = await SystemConfig.findOne({ singletonKey: 'global' });
@@ -44,6 +50,9 @@ export async function ensureSystemBootstrap(): Promise<void> {
     CreditPackage.init(),
     SystemConfig.init(),
     UserGoogleIntegration.init(),
+    UserGoogleDriveConnection.init(),
+    GoogleDriveOAuthState.init(),
+    GoogleDriveFileSelection.init(),
   ]);
 
   const cfg = await getOrCreateSystemConfig();
