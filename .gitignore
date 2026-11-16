@@ -1,0 +1,51 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+server/.env
+client/.env
+
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build outputs
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# Runtime storage, uploads, temp files, embedded dev DB, logs
+uploads/
+storage/
+temp/
+tmp/
+logs/
+*.log
+server/storage/
+server/uploads/
+server/temp/
+server/logs/
+server/.data/
+processor/temp/
+
+# OS & IDE files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# Private keys & credentials
+*.pem
+*.key
+*.p12
+credentials.json
+service-account*.json
+
+# Unselected generated assets
+Unselected files/
