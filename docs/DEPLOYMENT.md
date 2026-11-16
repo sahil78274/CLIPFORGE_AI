@@ -51,4 +51,6 @@ In production, run four isolated services (via Docker Compose, Kubernetes, or ma
 - [ ] Bootstrap admin password changed immediately after initial deployment
 - [ ] Razorpay live webhook URL (`https://<your-domain>/api/v1/payments/webhook`) registered with events `payment.captured`, `order.paid`, `payment.failed`, and `refund.processed`
 - [ ] `CORS_ORIGINS` restricted exclusively to your production HTTPS frontend domain
+- [ ] Google Drive import configured: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI` (`https://<your-api-domain>/api/v1/google-drive/oauth/callback`, registered byte-for-byte in Google Cloud Console), `GOOGLE_API_KEY` (HTTP-referrer restricted to your frontend origin, Picker API only), `GOOGLE_PROJECT_NUMBER`, and a unique `GOOGLE_TOKEN_ENCRYPTION_KEY` (>= 32 random chars — the server refuses to boot in production without it when Google OAuth is configured)
+- [ ] Google Drive API + Google Picker API enabled in the project; OAuth consent screen scopes limited to `drive.file` (+ OIDC identity)
 - [ ]Faster-Whisper CTranslate2 model pre-warmed on a persistent volume (`WHISPER_MODEL_PATH`) so workers never download weights at runtime

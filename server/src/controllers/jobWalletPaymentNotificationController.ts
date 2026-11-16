@@ -154,13 +154,20 @@ export const jobController = {
     }
 
     let video = project.videoId ? await Video.findById(project.videoId) : null;
-    if (!video && project.sourcePlatform !== 'youtube' && !project.youtubeMetadata?.videoId) {
+    if (
+      !video &&
+      project.sourcePlatform !== 'youtube' &&
+      project.sourcePlatform !== 'google_drive' &&
+      !project.youtubeMetadata?.videoId
+    ) {
       throw new BadRequestError('Project does not have a validated source video yet');
     }
 
     const estDuration = video
       ? video.durationSec
-      : project.youtubeMetadata?.durationSec || 60;
+      : project.youtubeMetadata?.durationSec ||
+        project.googleDriveMetadata?.durationSec ||
+        60;
     const cost = await calculateJobCreditCost(estDuration, project.settings.clipCount);
     const job = await ProcessingJob.create({
       userId: req.user!._id,
@@ -182,6 +189,18 @@ export const jobController = {
               channelName: project.youtubeMetadata.channelName,
               thumbnailUrl: project.youtubeMetadata.thumbnailUrl,
               expectedDurationSec: project.youtubeMetadata.durationSec ?? undefined,
+            }
+          : undefined,
+      driveImport:
+        !video && project.googleDriveMetadata
+          ? {
+              selectionId: project.googleDriveMetadata.selectionId,
+              fileId: project.googleDriveMetadata.fileId,
+              fileName: project.googleDriveMetadata.fileName,
+              mimeType: project.googleDriveMetadata.mimeType,
+              sizeBytes: project.googleDriveMetadata.sizeBytes ?? null,
+              durationSec: project.googleDriveMetadata.durationSec ?? null,
+              estimatedDurationSec: project.googleDriveMetadata.durationSec ?? 600,
             }
           : undefined,
       idempotencyKey: `job:manual:${String(project._id)}:${Date.now()}`,
@@ -249,13 +268,14 @@ export const jobController = {
 
     const project = await Project.findById(oldJob.projectId);
     const video = oldJob.videoId ? await Video.findById(oldJob.videoId) : null;
-    if (!project || (!video && !oldJob.youtubeImport)) {
+    if (!project || (!video && !oldJob.youtubeImport && !oldJob.driveImport)) {
       throw new NotFoundError('Associated project or source video missing');
     }
 
     const estDurationSec =
       video?.durationSec ||
-      Number((oldJob.youtubeImport?.metadata as any)?.durationSec || 600);
+      Number((oldJob.youtubeImport?.metadata as any)?.durationSec || 0) ||
+      Number(oldJob.driveImport?.estimatedDurationSec || 600);
     const cost = await calculateJobCreditCost(estDurationSec, project.settings.clipCount);
     const newJob = await ProcessingJob.create({
       userId: req.user!._id,
@@ -265,6 +285,7 @@ export const jobController = {
       targetClipId: oldJob.targetClipId,
       overrides: oldJob.overrides,
       youtubeImport: oldJob.youtubeImport,
+      driveImport: oldJob.driveImport,
       chunkProgress: oldJob.chunkProgress
         ? {
             ...oldJob.chunkProgress,

@@ -44,3 +44,18 @@ ClipForge AI uses **MongoDB** with **Mongoose v8** schemas, strict validation, c
 - **`AdminAuditLog`**: `{ createdAt: -1 }`, `{ adminId: 1 }` — immutable audit record of every privileged action.
 - **`PasswordResetToken`**: `{ tokenHash: 1 }` (unique), `{ expiresAt: 1 }` (TTL index) — single-use SHA-256 hashed tokens.
 - **`CreditPackage`** & **`SystemConfig`**: Admin-editable pricing tiers and platform processing limits.
+
+---
+
+## Google Drive Import Collections
+
+| Collection | Purpose | Key fields & indexes |
+| --- | --- | --- |
+| `usergoogledriveconnections` | One row per ClipForge user with a linked Google account. | `userId` (unique, indexed), `googleAccountId`, `email`, `encryptedRefreshToken` (AES-256-GCM `v1:` payload — **no access token is ever stored**), `scopes`, `status` (`active` \| `revoked`), `connectedAt`, `lastRefreshedAt`. |
+| `googledriveoauthstates` | Short-lived, single-use CSRF/replay records for in-flight consent attempts. | `userId` (indexed), `nonceHash` (unique, indexed — SHA-256 of the state nonce), `redirectPath`, `expiresAt` (indexed). Consumed atomically via `findOneAndDelete`. |
+| `googledrivefileselections` | Server-verified, user-bound handles for a Picker selection. Jobs reference only `_id`. | `userId` (indexed), `connectionGoogleAccountId`, `fileId`, `name`, `mimeType`, `sizeBytes`, `durationSec`, `width`, `height`, `thumbnailLink`, `md5Checksum` / `sha256Checksum`, `driveModifiedTime`, `expiresAt` (indexed), `lastVerifiedAt`; compound index `{ userId, createdAt }`. |
+
+`projects` gained `sourcePlatform: 'google_drive'` plus a `googleDriveMetadata` sub-document
+(`selectionId`, `fileId`, `fileName`, `mimeType`, `sizeBytes`, `durationSec`, `thumbnailUrl`).
+`processingjobs` gained `driveImport` (`selectionId`, `fileId`, `fileName`, `mimeType`,
+`sizeBytes`, `durationSec`, `estimatedDurationSec`) so imports are replayable after restarts.

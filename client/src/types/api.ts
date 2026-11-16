@@ -6,6 +6,9 @@ export type {
   DriveMatchConfidence,
   DriveVideoMatchInfo,
   GoogleConnectedChannel,
+  GoogleDriveConnectionStatus,
+  GoogleDrivePickerConfig,
+  GoogleDriveSelectedFile,
   GoogleDriveVideoFile,
   GoogleOAuthStatus,
   PipelineStage,
@@ -246,7 +249,23 @@ export interface ProjectItem {
   description?: string;
   sourceType: 'upload' | 'url';
   sourceUrl?: string;
-  sourcePlatform: 'upload' | 'youtube' | 'instagram' | 'facebook' | 'tiktok' | 'direct_mp4';
+  sourcePlatform:
+    | 'upload'
+    | 'youtube'
+    | 'instagram'
+    | 'facebook'
+    | 'tiktok'
+    | 'direct_mp4'
+    | 'google_drive';
+  googleDriveMetadata?: {
+    selectionId: string;
+    fileId: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number | null;
+    durationSec: number | null;
+    thumbnailUrl: string | null;
+  };
   youtubeVideoId?: string;
   youtubeMetadata?: {
     videoId: string;

@@ -10,7 +10,14 @@ export interface IProject extends Document {
   description?: string;
   sourceType: 'upload' | 'url';
   sourceUrl?: string;
-  sourcePlatform: 'upload' | 'youtube' | 'instagram' | 'facebook' | 'tiktok' | 'direct_mp4';
+  sourcePlatform:
+    | 'upload'
+    | 'youtube'
+    | 'instagram'
+    | 'facebook'
+    | 'tiktok'
+    | 'direct_mp4'
+    | 'google_drive';
   youtubeVideoId?: string;
   youtubeMetadata?: {
     videoId: string;
@@ -26,6 +33,15 @@ export interface IProject extends Document {
     googleDriveFileId?: string;
     googleDriveFileName?: string;
     driveMatchConfidence?: string;
+  };
+  googleDriveMetadata?: {
+    selectionId: string;
+    fileId: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number | null;
+    durationSec: number | null;
+    thumbnailUrl: string | null;
   };
   status: 'draft' | 'importing' | 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
   settings: ProjectProcessingSettings;
@@ -47,11 +63,20 @@ const projectSchema = new Schema<IProject>(
     sourceUrl: { type: String, trim: true },
     sourcePlatform: {
       type: String,
-      enum: ['upload', 'youtube', 'instagram', 'facebook', 'tiktok', 'direct_mp4'],
+      enum: [
+        'upload',
+        'youtube',
+        'instagram',
+        'facebook',
+        'tiktok',
+        'direct_mp4',
+        'google_drive',
+      ],
       default: 'upload',
     },
     youtubeVideoId: { type: String, trim: true, index: true },
     youtubeMetadata: { type: Schema.Types.Mixed },
+    googleDriveMetadata: { type: Schema.Types.Mixed },
     status: {
       type: String,
       enum: ['draft', 'importing', 'queued', 'processing', 'completed', 'failed', 'cancelled'],

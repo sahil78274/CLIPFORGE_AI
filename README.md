@@ -148,6 +148,46 @@ YOUTUBE_MEDIA_DOWNLOAD_CMD=
 
 ---
 
+## Importing Videos Directly from Google Drive
+
+`/dashboard/create` offers two primary source options: **A. Direct Upload** (unchanged) and
+**B. Import from Google Drive**.
+
+The Drive flow uses Google OAuth 2.0 with the minimum `https://www.googleapis.com/auth/drive.file`
+scope and the **official Google Picker API**:
+
+1. **Connect Google Drive** — server-issued signed single-use state → Google consent (offline access) → server-side code exchange.
+2. **Select Video from Drive** — the official Picker (filtered to MP4/MOV/WebM/MKV/M4V, single selection).
+3. **Review** — server-verified name, MIME type, size, duration, and proxied thumbnail.
+4. **Generate Clips** — credits reserved, file streamed to temporary storage with HTTP Range chunks
+   (constant RAM, resumable, checksum + FFprobe validated), then the existing FFmpeg +
+   Faster-Whisper chunked pipeline runs with live progress.
+5. **Results** — generated clips with preview, MP4 download, and bulk ZIP download.
+
+```dotenv
+GOOGLE_CLIENT_ID=...apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=GOCSPX-...
+GOOGLE_REDIRECT_URI=http://localhost:4000/api/v1/google-drive/oauth/callback
+GOOGLE_API_KEY=AIza...          # browser-restricted Picker API key
+GOOGLE_PROJECT_NUMBER=123456789012
+GOOGLE_TOKEN_ENCRYPTION_KEY=<32+ random chars>   # AES-256-GCM key for refresh tokens at rest
+```
+
+- **Callback route (mounted and verified):** `http://localhost:4000/api/v1/google-drive/oauth/callback`
+- `GET /api/v1/youtube/oauth/google/callback` stays mounted as a dispatcher alias, so both URIs work.
+- Refresh tokens are encrypted at rest; access tokens are **never** persisted and never returned
+  to the browser beyond a short-lived Picker token.
+- Full console steps, security model, and the local walkthrough: [`docs/GOOGLE_DRIVE_SETUP.md`](docs/GOOGLE_DRIVE_SETUP.md).
+
+### Key Google Drive REST Endpoints (`/api/v1/google-drive`)
+- `GET /api/v1/google-drive/config` — Public Picker/API configuration (never the client secret).
+- `GET /api/v1/google-drive/status` · `POST /oauth/authorize` · `GET /oauth/callback` · `POST /oauth/disconnect`
+- `GET /api/v1/google-drive/picker-token` — Short-lived token for the Picker widget only.
+- `POST /api/v1/google-drive/files/select` — Independently re-verifies the picked file with the user's token and returns an opaque, user-bound selection.
+- `POST /api/v1/google-drive/generate` — Re-verifies, reserves credits, creates the project/job, and enqueues the chunked pipeline.
+
+---
+
 ## Default Development Bootstrap Account
 
 On startup, `ensureSystemBootstrap()` seeds default configurable credit packages, system limits, and a bootstrap administrator account (configurable via `.env`):
@@ -209,3 +249,4 @@ ClipForge AI never hardcodes secrets or fakes external integrations. Any unconfi
 - [Security & Platform Compliance](docs/SECURITY.md)
 - [Production Deployment Guide](docs/DEPLOYMENT.md)
 - [Environment Setup Guide (Windows, macOS, Linux)](docs/ENVIRONMENT_SETUP.md)
+- [Google Drive Import Setup (OAuth 2.0 + Picker + local workflow)](docs/GOOGLE_DRIVE_SETUP.md)

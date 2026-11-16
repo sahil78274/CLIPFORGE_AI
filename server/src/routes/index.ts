@@ -4,13 +4,21 @@ import { Router } from 'express';
 import multer from 'multer';
 import { env } from '../config/env';
 import { optionalAuth, requireAdmin, requireAuth } from '../middleware/auth';
-import { authRateLimiter, uploadAndJobLimiter } from '../middleware/rateLimit';
+import {
+  authRateLimiter,
+  googleDriveApiLimiter,
+  googleOAuthLimiter,
+  uploadAndJobLimiter,
+} from '../middleware/rateLimit';
 import { validateBody } from '../middleware/validate';
 import { asyncHandler, BadRequestError } from '../utils/errors';
 import {
   adminCreditAdjustSchema,
   adminUserStatusSchema,
   changePasswordSchema,
+  googleDriveAuthorizeSchema,
+  googleDriveGenerateSchema,
+  googleDriveSelectFileSchema,
   checkUrlSchema,
   contactSubmissionSchema,
   createPaymentOrderSchema,
@@ -32,6 +40,7 @@ import { authController } from '../controllers/authController';
 import { userController } from '../controllers/userController';
 import { projectController, videoController } from '../controllers/projectAndVideoController';
 import { youtubeController } from '../controllers/youtubeController';
+import { googleDriveController } from '../controllers/googleDriveController';
 import { clipController } from '../controllers/clipController';
 import {
   jobController,
@@ -195,7 +204,11 @@ youtubeRouter.post(
 );
 youtubeRouter.get(
   '/oauth/google/callback',
-  asyncHandler(youtubeController.googleOAuthCallback)
+  // Backwards-compatible alias: a single Google OAuth client may have either the
+  // legacy YouTube callback or the new /api/v1/google-drive/oauth/callback registered
+  // as its authorized redirect URI. This dispatcher routes Drive states to the Drive
+  // service and legacy YouTube states to the YouTube controller.
+  asyncHandler(googleDriveController.oauthCallback)
 );
 youtubeRouter.post(
   '/oauth/google/disconnect',
@@ -221,6 +234,63 @@ youtubeRouter.post(
   asyncHandler(youtubeController.generateClips)
 );
 apiV1Router.use('/youtube', youtubeRouter);
+
+/* --- /api/v1/google-drive (OAuth 2.0 + official Picker API + streamed import) --- */
+const googleDriveRouter = Router();
+// Public Picker configuration (API key & project number are browser-safe identifiers).
+googleDriveRouter.get('/config', googleDriveApiLimiter, asyncHandler(googleDriveController.config));
+// Canonical Google OAuth 2.0 callback — no session cookie required (Google redirects here).
+googleDriveRouter.get(
+  '/oauth/callback',
+  googleOAuthLimiter,
+  asyncHandler(googleDriveController.oauthCallback)
+);
+
+googleDriveRouter.use(requireAuth);
+googleDriveRouter.get(
+  '/status',
+  googleDriveApiLimiter,
+  asyncHandler(googleDriveController.status)
+);
+googleDriveRouter.post(
+  '/oauth/authorize',
+  googleOAuthLimiter,
+  validateBody(googleDriveAuthorizeSchema),
+  asyncHandler(googleDriveController.authorize)
+);
+googleDriveRouter.post(
+  '/oauth/disconnect',
+  googleOAuthLimiter,
+  asyncHandler(googleDriveController.disconnect)
+);
+googleDriveRouter.get(
+  '/picker-token',
+  googleDriveApiLimiter,
+  asyncHandler(googleDriveController.pickerToken)
+);
+googleDriveRouter.post(
+  '/files/select',
+  googleDriveApiLimiter,
+  validateBody(googleDriveSelectFileSchema),
+  asyncHandler(googleDriveController.selectFile)
+);
+googleDriveRouter.get(
+  '/selections/:id',
+  googleDriveApiLimiter,
+  asyncHandler(googleDriveController.getSelection)
+);
+googleDriveRouter.get(
+  '/selections/:id/thumbnail',
+  googleDriveApiLimiter,
+  asyncHandler(googleDriveController.thumbnail)
+);
+googleDriveRouter.post(
+  '/generate',
+  uploadAndJobLimiter,
+  validateBody(googleDriveGenerateSchema),
+  asyncHandler(googleDriveController.generate)
+);
+apiV1Router.use('/google-drive', googleDriveRouter);
 
 /* --- /api/v1/clips --- */
 const clipsRouter = Router();

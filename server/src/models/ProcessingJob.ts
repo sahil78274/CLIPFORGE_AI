@@ -45,6 +45,16 @@ export interface IProcessingJob extends Document {
     googleDriveFileName?: string;
     metadata?: Record<string, unknown>;
   };
+  /** Direct "Import from Google Drive" job — points at a verified selection, never a raw ID. */
+  driveImport?: {
+    selectionId: string;
+    fileId: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number | null;
+    durationSec: number | null;
+    estimatedDurationSec: number;
+  };
   attempts: number;
   maxAttempts: number;
   creditsReserved: number;
@@ -92,6 +102,7 @@ const processingJobSchema = new Schema<IProcessingJob>(
     },
     chunkProgress: { type: Schema.Types.Mixed },
     youtubeImport: { type: Schema.Types.Mixed },
+    driveImport: { type: Schema.Types.Mixed },
     attempts: { type: Number, default: 0 },
     maxAttempts: { type: Number, default: 3 },
     creditsReserved: { type: Number, default: 0 },

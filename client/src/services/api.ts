@@ -4,6 +4,9 @@ import type {
   CreditPackageItem,
   CreditTransactionItem,
   DashboardOverviewData,
+  GoogleDriveConnectionStatus,
+  GoogleDrivePickerConfig,
+  GoogleDriveSelectedFile,
   GoogleDriveVideoFile,
   GoogleOAuthStatus,
   NotificationItem,
@@ -284,6 +287,54 @@ export const api = {
         job?: ProcessingJobItem;
         youtube: YouTubeFetchResponse['video'];
       }>('/youtube/generate', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+  },
+
+  googleDrive: {
+    /** Public Picker identifiers only — never includes client secrets or refresh tokens. */
+    config: () => request<GoogleDrivePickerConfig>('/google-drive/config'),
+    status: () => request<GoogleDriveConnectionStatus>('/google-drive/status'),
+    authorize: (body?: { redirectPath?: string; loginHint?: string }) =>
+      request<{ authorizationUrl: string; expiresAt: number }>(
+        '/google-drive/oauth/authorize',
+        { method: 'POST', body: JSON.stringify(body || {}) }
+      ),
+    disconnect: () =>
+      request<GoogleDriveConnectionStatus>('/google-drive/oauth/disconnect', {
+        method: 'POST',
+      }),
+    pickerToken: () =>
+      request<{ accessToken: string; expiresAt: string; expiresInSec: number; scopes: string[] }>(
+        '/google-drive/picker-token'
+      ),
+    selectFile: (fileId: string) =>
+      request<GoogleDriveSelectedFile>('/google-drive/files/select', {
+        method: 'POST',
+        body: JSON.stringify({ fileId }),
+      }),
+    getSelection: (selectionId: string) =>
+      request<GoogleDriveSelectedFile>(`/google-drive/selections/${selectionId}`),
+    generate: (body: {
+      selectionId: string;
+      title?: string;
+      settings: ProjectProcessingSettings;
+      autoStart?: boolean;
+    }) =>
+      request<{
+        project: ProjectItem;
+        job?: ProcessingJobItem;
+        file: GoogleDriveSelectedFile;
+        estimatedCredits: number;
+        chunkPlan: {
+          enabled: boolean;
+          chunkDurationSec: number;
+          chunkOverlapSec: number;
+          estimatedChunks: number;
+          maxSupportedDurationSec: number;
+        };
+      }>('/google-drive/generate', {
         method: 'POST',
         body: JSON.stringify(body),
       }),

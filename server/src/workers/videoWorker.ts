@@ -13,6 +13,7 @@ import {
 } from '../models';
 import { getStorageAdapter } from '../services/storageService';
 import { getMediaAcquisitionService } from '../services/mediaAcquisition';
+import { getGoogleDriveImportService } from '../services/googleDrive/GoogleDriveImportService';
 import {
   calculateJobCreditCost,
   releaseReservedCredits,
@@ -91,6 +92,17 @@ const NON_RETRYABLE_ERROR_CODES = new Set([
   'VIDEO_DURATION_LIMIT_EXCEEDED',
   'INVALID_MEDIA_CONTAINER',
   'MISSING_PROJECT_OR_VIDEO',
+  'GOOGLE_DRIVE_NOT_VIDEO',
+  'GOOGLE_DRIVE_ACCESS_DENIED',
+  'GOOGLE_DRIVE_FILE_NOT_FOUND',
+  'GOOGLE_DRIVE_FILE_TOO_LARGE',
+  'GOOGLE_DRIVE_SELECTION_EXPIRED',
+  'GOOGLE_DRIVE_SELECTION_NOT_FOUND',
+  'GOOGLE_DRIVE_REAUTH_REQUIRED',
+  'GOOGLE_DRIVE_SCOPE_NOT_GRANTED',
+  'GOOGLE_DRIVE_INVALID_FILE_ID',
+  'GOOGLE_DRIVE_INVALID_SELECTION',
+  'GOOGLE_DRIVE_INVALID_STREAM',
 ]);
 
 export async function executeProcessingJob(
@@ -118,7 +130,7 @@ export async function executeProcessingJob(
   const project = await Project.findById(claimed.projectId);
   let video: IVideo | null = claimed.videoId ? await Video.findById(claimed.videoId) : null;
 
-  if (!project || (!video && !claimed.youtubeImport)) {
+  if (!project || (!video && !claimed.youtubeImport && !claimed.driveImport)) {
     removeFileSafe(getJobCheckpointPath(jobId));
     await failAndReleaseJob(
       claimed._id.toString(),
@@ -145,8 +157,102 @@ export async function executeProcessingJob(
   let lastStage = claimed.stage || 'importing';
 
   try {
-    // Stage 1a: Acquire actual YouTube video media if not yet acquired (recoverable across restarts)
+    // Stage 1a: Acquire actual source media (Google Drive import or YouTube import).
+    // Both are recoverable: reservations are released on failure and the whole per-job
+    // temp directory (including streamed .part files) is removed in the finally block.
     let directAcquiredPathForRun: string | null = null;
+
+    if (!video && claimed.driveImport) {
+      lastStage = 'importing';
+      const di = claimed.driveImport;
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: {
+          stage: 'importing',
+          progressPercent: 4,
+          currentMessage: `Verifying and streaming "${di.fileName}" from Google Drive...`,
+        },
+        $push: {
+          stageHistory: {
+            stage: 'importing',
+            startedAt: new Date(),
+            message: `Starting verified Google Drive media acquisition (selection ${di.selectionId})`,
+          },
+        },
+      });
+
+      const acquireController = new AbortController();
+      activeAcquireControllers.set(jobId, acquireController);
+
+      let acquiredDrive;
+      try {
+        acquiredDrive = await getGoogleDriveImportService().acquireForJob({
+          userId: String(claimed.userId),
+          selectionId: di.selectionId,
+          destDir: path.join(tempJobDir, 'drive_source'),
+          maxDurationSec: Math.min(
+            env.MAX_VIDEO_DURATION_SEC,
+            cfg.maxVideoDurationSec || 36000
+          ),
+          signal: acquireController.signal,
+          onProgress: (pct, msg) => {
+            const mapped = Math.min(9, 4 + Math.floor(pct / 20));
+            void ProcessingJob.findByIdAndUpdate(jobId, {
+              $set: { stage: 'importing', progressPercent: mapped, currentMessage: msg },
+            }).exec();
+          },
+        });
+      } finally {
+        activeAcquireControllers.delete(jobId);
+      }
+
+      if (cancelledJobIds.has(jobId)) {
+        throw new Error('JOB_CANCELLED_BY_USER');
+      }
+
+      const ext = path.extname(acquiredDrive.localFilePath) || '.mp4';
+      const storageKey = `sources/${String(claimed.userId)}/${String(project._id)}/drive_${di.fileId}${ext}`;
+      await storage.saveFromLocalFile(
+        acquiredDrive.localFilePath,
+        storageKey,
+        acquiredDrive.mimeType
+      );
+      // Streamed temporary video is deleted immediately after being stored.
+      removeFileSafe(acquiredDrive.localFilePath);
+
+      video = await Video.create({
+        userId: claimed.userId,
+        projectId: project._id,
+        originalFilename: di.fileName,
+        storageKey,
+        storageProvider: storage.provider,
+        mimeType: acquiredDrive.mimeType,
+        sizeBytes: acquiredDrive.probe.sizeBytes,
+        durationSec: acquiredDrive.probe.durationSec,
+        width: acquiredDrive.probe.width,
+        height: acquiredDrive.probe.height,
+        fps: acquiredDrive.probe.fps,
+        codec: acquiredDrive.probe.codec,
+        audioCodec: acquiredDrive.probe.audioCodec,
+        hasAudio: acquiredDrive.probe.hasAudio,
+        status: 'validated',
+      });
+
+      project.videoId = video._id;
+      if (project.googleDriveMetadata) {
+        project.googleDriveMetadata = {
+          ...project.googleDriveMetadata,
+          durationSec: acquiredDrive.probe.durationSec,
+          sizeBytes: acquiredDrive.sizeBytes,
+        };
+        project.markModified('googleDriveMetadata');
+      }
+      await project.save();
+
+      claimed.videoId = video._id;
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: { videoId: video._id },
+      });
+    }
 
     if (!video && claimed.youtubeImport) {
       lastStage = 'importing';
