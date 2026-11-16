@@ -31,6 +31,7 @@ process.env.VIDEO_CHUNK_OVERLAP_SEC = '5';
 import { createApp } from '../app';
 import { connectDatabase, disconnectDatabase } from '../config/database';
 import { env } from '../config/env';
+import { expireInMemoryAccessTokenForTesting } from '../services/mediaAcquisition/GoogleOAuthProvider';
 import {
   Clip,
   CreditTransaction,
@@ -696,18 +697,15 @@ describe('ClipForge AI — Modular Media Acquisition (Metadata, Google OAuth, Go
     expect(cbRes.body.data.status.hasDriveScope).toBe(true);
     expect(cbRes.body.data.status.channels[0].channelId).toBe('UC_OWNER_CHANNEL_01');
 
-    // Verify tokens in MongoDB are encrypted (never stored in plaintext)
+    // Verify refresh token in MongoDB is AES-256-GCM encrypted and access token is NOT stored permanently
     const dbRecord = await UserGoogleIntegration.findOne({ userId: ownerUserId }).lean();
     expect(dbRecord).toBeTruthy();
-    expect(dbRecord!.encryptedAccessToken.startsWith('v1:')).toBe(true);
-    expect(dbRecord!.encryptedAccessToken).not.toContain('ya29.');
-    expect(dbRecord!.encryptedRefreshToken?.startsWith('v1:')).toBe(true);
+    expect((dbRecord as any).encryptedAccessToken).toBeUndefined();
+    expect(dbRecord!.encryptedRefreshToken.startsWith('v1:')).toBe(true);
+    expect(dbRecord!.encryptedRefreshToken).not.toContain('1//');
 
-    // Force token expiration to prove transparent refresh_token rotation works
-    await UserGoogleIntegration.updateOne(
-      { userId: ownerUserId },
-      { $set: { tokenExpiresAt: new Date(Date.now() - 120_000) } }
-    );
+    // Force in-memory access token expiration to prove transparent refresh_token rotation works
+    expireInMemoryAccessTokenForTesting(ownerUserId);
 
     // Verified channel owner CAN inspect their own private YouTube video!
     const ownerPrivFetch = await ownerAgent

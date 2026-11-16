@@ -120,6 +120,7 @@ export interface GoogleConnectedChannel {
 
 export interface GoogleOAuthStatus {
   oauthConfigured: boolean;
+  pickerConfigured?: boolean;
   connected: boolean;
   email?: string;
   displayName?: string;
@@ -129,6 +130,16 @@ export interface GoogleOAuthStatus {
   hasDriveScope?: boolean;
   channels?: GoogleConnectedChannel[];
   setupInstructions?: string;
+}
+
+export interface GooglePickerSession {
+  accessToken: string;
+  expiresAt: string;
+  apiKey: string;
+  appId: string;
+  clientId: string;
+  pickerConfigured: boolean;
+  supportedMimeTypes: string[];
 }
 
 export type DriveMatchConfidence = 'exact' | 'high' | 'medium' | 'none';

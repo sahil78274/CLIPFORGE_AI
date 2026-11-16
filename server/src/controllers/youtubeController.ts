@@ -61,6 +61,7 @@ export const youtubeController = {
       {
         redirectPath: req.body?.redirectPath,
         loginHint: req.body?.loginHint || req.user?.email,
+        includeYouTubeScope: true,
       }
     );
     res.json({

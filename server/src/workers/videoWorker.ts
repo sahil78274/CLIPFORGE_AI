@@ -88,6 +88,14 @@ const NON_RETRYABLE_ERROR_CODES = new Set([
   'YOUTUBE_MEDIA_NOT_VIDEO',
   'YOUTUBE_MEDIA_ADAPTER_NOT_CONFIGURED',
   'YOUTUBE_MEDIA_ACCESS_FAILED',
+  'GOOGLE_DRIVE_FILE_NOT_AUTHORIZED',
+  'GOOGLE_DRIVE_NOT_VIDEO',
+  'GOOGLE_DRIVE_ACCESS_DENIED',
+  'GOOGLE_DRIVE_DOWNLOAD_DENIED',
+  'GOOGLE_DRIVE_FILE_NOT_FOUND',
+  'GOOGLE_DRIVE_CHECKSUM_MISMATCH',
+  'GOOGLE_OAUTH_REVOKED',
+  'GOOGLE_OAUTH_NOT_CONNECTED',
   'VIDEO_DURATION_LIMIT_EXCEEDED',
   'INVALID_MEDIA_CONTAINER',
   'MISSING_PROJECT_OR_VIDEO',
@@ -118,7 +126,7 @@ export async function executeProcessingJob(
   const project = await Project.findById(claimed.projectId);
   let video: IVideo | null = claimed.videoId ? await Video.findById(claimed.videoId) : null;
 
-  if (!project || (!video && !claimed.youtubeImport)) {
+  if (!project || (!video && !claimed.youtubeImport && !claimed.googleDriveImport)) {
     removeFileSafe(getJobCheckpointPath(jobId));
     await failAndReleaseJob(
       claimed._id.toString(),
@@ -245,6 +253,105 @@ export async function executeProcessingJob(
           mediaAdapterUsed: acquired.adapterName,
         };
         project.markModified('youtubeMetadata');
+      }
+      await project.save();
+
+      claimed.videoId = video._id;
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: { videoId: video._id },
+      });
+    }
+
+    // Stage 1b: Acquire selected Google Drive video media if not yet acquired (streaming + resumable + checksum-verified)
+    if (!video && claimed.googleDriveImport) {
+      lastStage = 'importing';
+      const gd = claimed.googleDriveImport;
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: {
+          stage: 'importing',
+          progressPercent: 4,
+          currentMessage: `Downloading "${gd.name}" from Google Drive...`,
+        },
+        $push: {
+          stageHistory: {
+            stage: 'importing',
+            startedAt: new Date(),
+            message: `Starting Google Drive streaming download (${gd.name})`,
+          },
+        },
+      });
+
+      const acquireController = new AbortController();
+      activeAcquireControllers.set(jobId, acquireController);
+
+      let acquired;
+      try {
+        const mediaAcquisition = getMediaAcquisitionService();
+        acquired =
+          await mediaAcquisition.googleDriveMediaProvider.acquireDriveFileToDisk(
+            gd.fileId,
+            path.join(tempJobDir, 'drive_source'),
+            {
+              userId: String(claimed.userId),
+              googleDriveFileId: gd.fileId,
+              requireAuthorizedSelection: true,
+              maxDurationSec: Math.min(
+                env.MAX_VIDEO_DURATION_SEC,
+                cfg.maxVideoDurationSec || 36000
+              ),
+              signal: acquireController.signal,
+              onProgress: (pct, msg) => {
+                const mapped = Math.min(9, 4 + Math.floor(pct / 20));
+                void ProcessingJob.findByIdAndUpdate(jobId, {
+                  $set: { stage: 'importing', progressPercent: mapped, currentMessage: msg },
+                }).exec();
+              },
+            }
+          );
+      } finally {
+        activeAcquireControllers.delete(jobId);
+      }
+
+      if (cancelledJobIds.has(jobId)) {
+        throw new Error('JOB_CANCELLED_BY_USER');
+      }
+
+      const ext = path.extname(acquired.localFilePath) || '.mp4';
+      const storageKey = `sources/${String(claimed.userId)}/${String(project._id)}/gdrive_${gd.fileId}${ext}`;
+
+      await storage.saveFromLocalFile(acquired.localFilePath, storageKey, acquired.mimeType);
+      if (acquired.cleanupAfterStore) {
+        removeFileSafe(acquired.localFilePath);
+      } else {
+        directAcquiredPathForRun = acquired.localFilePath;
+      }
+
+      video = await Video.create({
+        userId: claimed.userId,
+        projectId: project._id,
+        originalFilename: gd.name || `gdrive_${gd.fileId}${ext}`,
+        storageKey,
+        storageProvider: storage.provider,
+        mimeType: acquired.mimeType,
+        sizeBytes: acquired.probe.sizeBytes,
+        durationSec: acquired.probe.durationSec,
+        width: acquired.probe.width,
+        height: acquired.probe.height,
+        fps: acquired.probe.fps,
+        codec: acquired.probe.codec,
+        audioCodec: acquired.probe.audioCodec,
+        hasAudio: acquired.probe.hasAudio,
+        status: 'validated',
+      });
+
+      project.videoId = video._id;
+      if (project.googleDriveMetadata) {
+        project.googleDriveMetadata = {
+          ...project.googleDriveMetadata,
+          durationSec: acquired.probe.durationSec,
+          sizeBytes: acquired.probe.sizeBytes,
+        };
+        project.markModified('googleDriveMetadata');
       }
       await project.save();
 

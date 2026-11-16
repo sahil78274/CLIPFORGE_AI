@@ -37,6 +37,14 @@ export interface IProcessingJob extends Document {
     currentChunkIndex: number;
     checkpointPath?: string;
   };
+  googleDriveImport?: {
+    fileId: string;
+    name: string;
+    mimeType: string;
+    sizeBytes?: number | null;
+    durationSec?: number | null;
+    thumbnailUrl?: string;
+  };
   youtubeImport?: {
     videoId: string;
     canonicalUrl: string;
@@ -91,6 +99,7 @@ const processingJobSchema = new Schema<IProcessingJob>(
       warnings: { type: [String], default: [] },
     },
     chunkProgress: { type: Schema.Types.Mixed },
+    googleDriveImport: { type: Schema.Types.Mixed },
     youtubeImport: { type: Schema.Types.Mixed },
     attempts: { type: Number, default: 0 },
     maxAttempts: { type: Number, default: 3 },

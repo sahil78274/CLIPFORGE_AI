@@ -44,3 +44,31 @@ export const uploadAndJobLimiter = rateLimit({
     },
   },
 });
+
+export const googleOAuthRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isTest ? 1000 : 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'GOOGLE_OAUTH_RATE_LIMITED',
+      message: 'Too many Google OAuth requests. Please wait a few minutes and try again.',
+    },
+  },
+});
+
+export const googleDriveApiRateLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: isTest ? 1000 : 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: {
+      code: 'GOOGLE_DRIVE_RATE_LIMITED',
+      message: 'Too many Google Drive API requests. Please wait shortly before retrying.',
+    },
+  },
+});
