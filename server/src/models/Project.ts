@@ -11,6 +11,17 @@ export interface IProject extends Document {
   sourceType: 'upload' | 'url';
   sourceUrl?: string;
   sourcePlatform: 'upload' | 'youtube' | 'instagram' | 'facebook' | 'tiktok' | 'direct_mp4';
+  youtubeVideoId?: string;
+  youtubeMetadata?: {
+    videoId: string;
+    canonicalUrl: string;
+    title: string;
+    channelName: string;
+    thumbnailUrl: string;
+    durationSec: number | null;
+    metadataSource: string;
+    mediaAdapterUsed?: string;
+  };
   status: 'draft' | 'importing' | 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
   settings: ProjectProcessingSettings;
   videoId?: Types.ObjectId;
@@ -34,6 +45,8 @@ const projectSchema = new Schema<IProject>(
       enum: ['upload', 'youtube', 'instagram', 'facebook', 'tiktok', 'direct_mp4'],
       default: 'upload',
     },
+    youtubeVideoId: { type: String, trim: true, index: true },
+    youtubeMetadata: { type: Schema.Types.Mixed },
     status: {
       type: String,
       enum: ['draft', 'importing', 'queued', 'processing', 'completed', 'failed', 'cancelled'],

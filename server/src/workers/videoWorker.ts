@@ -8,8 +8,11 @@ import {
   ProcessingJob,
   Project,
   Video,
+  getOrCreateSystemConfig,
+  type IVideo,
 } from '../models';
 import { getStorageAdapter } from '../services/storageService';
+import { getYouTubeMediaSourceAdapter } from '../services/youtubeMediaSourceAdapter';
 import {
   calculateJobCreditCost,
   releaseReservedCredits,
@@ -22,10 +25,30 @@ import {
 import { logger } from '../utils/logger';
 
 const activeSubprocesses = new Map<string, ChildProcess>();
+const activeAcquireControllers = new Map<string, AbortController>();
 const cancelledJobIds = new Set<string>();
+
+// Testing hook allowing deterministic one-shot worker interruption on a given chunk
+const oneShotInterruptChunkByJob = new Map<string, number>();
+let oneShotInterruptNextJobChunk: number | null = null;
+
+export function scheduleSimulatedWorkerInterruptForTesting(
+  jobId: string,
+  afterChunkCount: number
+): void {
+  oneShotInterruptChunkByJob.set(jobId, afterChunkCount);
+}
+
+export function scheduleNextWorkerInterruptForTesting(afterChunkCount: number): void {
+  oneShotInterruptNextJobChunk = afterChunkCount;
+}
 
 export function cancelRunningSubprocess(jobId: string): void {
   cancelledJobIds.add(jobId);
+  const ac = activeAcquireControllers.get(jobId);
+  if (ac) {
+    ac.abort();
+  }
   const child = activeSubprocesses.get(jobId);
   if (child && !child.killed) {
     child.kill('SIGTERM');
@@ -45,7 +68,35 @@ function removeDirSafe(dirPath: string): void {
   }
 }
 
-export async function executeProcessingJob(jobId: string): Promise<void> {
+function removeFileSafe(filePath: string): void {
+  try {
+    if (filePath && fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+    }
+  } catch {
+    // ignore cleanup error
+  }
+}
+
+export function getJobCheckpointPath(jobId: string): string {
+  return path.join(env.TEMP_WORKING_DIR, 'checkpoints', `job_${jobId}.json`);
+}
+
+const NON_RETRYABLE_ERROR_CODES = new Set([
+  'YOUTUBE_VIDEO_PRIVATE',
+  'YOUTUBE_VIDEO_UNAVAILABLE',
+  'YOUTUBE_MEDIA_NOT_VIDEO',
+  'YOUTUBE_MEDIA_ADAPTER_NOT_CONFIGURED',
+  'YOUTUBE_MEDIA_ACCESS_FAILED',
+  'VIDEO_DURATION_LIMIT_EXCEEDED',
+  'INVALID_MEDIA_CONTAINER',
+  'MISSING_PROJECT_OR_VIDEO',
+]);
+
+export async function executeProcessingJob(
+  jobId: string,
+  options?: { disableAutoRetry?: boolean }
+): Promise<void> {
   // Atomic claim so duplicate workers never process the same job simultaneously
   const claimed = await ProcessingJob.findOneAndUpdate(
     { _id: jobId, status: 'queued' },
@@ -65,9 +116,10 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
   }
 
   const project = await Project.findById(claimed.projectId);
-  const video = claimed.videoId ? await Video.findById(claimed.videoId) : null;
+  let video: IVideo | null = claimed.videoId ? await Video.findById(claimed.videoId) : null;
 
-  if (!project || !video) {
+  if (!project || (!video && !claimed.youtubeImport)) {
+    removeFileSafe(getJobCheckpointPath(jobId));
     await failAndReleaseJob(
       claimed._id.toString(),
       'MISSING_PROJECT_OR_VIDEO',
@@ -82,21 +134,140 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
 
   const tempJobDir = path.join(env.TEMP_WORKING_DIR, `job_${jobId}`);
   const outputDir = path.join(tempJobDir, 'outputs');
+  const checkpointPath = getJobCheckpointPath(jobId);
   fs.mkdirSync(outputDir, { recursive: true });
+  fs.mkdirSync(path.dirname(checkpointPath), { recursive: true });
 
   const storage = getStorageAdapter();
   const aiProvider = getAIProvider();
+  const cfg = await getOrCreateSystemConfig();
+
+  let lastStage = claimed.stage || 'importing';
 
   try {
-    const localVideoPath = await storage.resolveLocalPathForProcessing(
-      video.storageKey,
-      path.join(tempJobDir, 'source')
-    );
+    // Stage 1a: Acquire actual YouTube video media if not yet acquired (recoverable across restarts)
+    let directAcquiredPathForRun: string | null = null;
+
+    if (!video && claimed.youtubeImport) {
+      lastStage = 'importing';
+      const yt = claimed.youtubeImport;
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: {
+          stage: 'importing',
+          progressPercent: 4,
+          currentMessage: `Acquiring authorized video media for YouTube ID ${yt.videoId}...`,
+        },
+        $push: {
+          stageHistory: {
+            stage: 'importing',
+            startedAt: new Date(),
+            message: `Starting authorized media acquisition (${yt.videoId})`,
+          },
+        },
+      });
+
+      const acquireController = new AbortController();
+      activeAcquireControllers.set(jobId, acquireController);
+
+      let acquired;
+      try {
+        const ytAdapter = getYouTubeMediaSourceAdapter();
+        acquired = await ytAdapter.acquireMedia(
+          yt.videoId,
+          yt.canonicalUrl,
+          path.join(tempJobDir, 'yt_source'),
+          {
+            authorizedMediaUrl: yt.authorizedMediaUrl,
+            maxDurationSec: Math.min(env.MAX_VIDEO_DURATION_SEC, cfg.maxVideoDurationSec || 36000),
+            signal: acquireController.signal,
+            onProgress: (pct, msg) => {
+              const mapped = Math.min(9, 4 + Math.floor(pct / 20));
+              void ProcessingJob.findByIdAndUpdate(jobId, {
+                $set: { stage: 'importing', progressPercent: mapped, currentMessage: msg },
+              }).exec();
+            },
+          }
+        );
+      } finally {
+        activeAcquireControllers.delete(jobId);
+      }
+
+      if (cancelledJobIds.has(jobId)) {
+        throw new Error('JOB_CANCELLED_BY_USER');
+      }
+
+      const ext = path.extname(acquired.localFilePath) || '.mp4';
+      const storageKey = `sources/${String(claimed.userId)}/${String(project._id)}/yt_${yt.videoId}${ext}`;
+
+      // When using local storage and a persistent owner-authorized export file, copy to project storage
+      await storage.saveFromLocalFile(acquired.localFilePath, storageKey, acquired.mimeType);
+      if (acquired.cleanupAfterStore) {
+        removeFileSafe(acquired.localFilePath);
+      } else {
+        directAcquiredPathForRun = acquired.localFilePath;
+      }
+
+      video = await Video.create({
+        userId: claimed.userId,
+        projectId: project._id,
+        originalFilename: `youtube_${yt.videoId}${ext}`,
+        storageKey,
+        storageProvider: storage.provider,
+        mimeType: acquired.mimeType,
+        sizeBytes: acquired.probe.sizeBytes,
+        durationSec: acquired.probe.durationSec,
+        width: acquired.probe.width,
+        height: acquired.probe.height,
+        fps: acquired.probe.fps,
+        codec: acquired.probe.codec,
+        audioCodec: acquired.probe.audioCodec,
+        hasAudio: acquired.probe.hasAudio,
+        status: 'validated',
+      });
+
+      project.videoId = video._id;
+      if (project.youtubeMetadata) {
+        project.youtubeMetadata = {
+          ...project.youtubeMetadata,
+          durationSec: acquired.probe.durationSec,
+          mediaAdapterUsed: acquired.adapterName,
+        };
+        project.markModified('youtubeMetadata');
+      }
+      await project.save();
+
+      claimed.videoId = video._id;
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: { videoId: video._id },
+      });
+    }
+
+    if (!video) {
+      throw new Error('Source video missing after importing stage');
+    }
+
+    const localVideoPath =
+      directAcquiredPathForRun && fs.existsSync(directAcquiredPathForRun)
+        ? directAcquiredPathForRun
+        : await storage.resolveLocalPathForProcessing(
+            video.storageKey,
+            path.join(tempJobDir, 'source')
+          );
 
     const effectiveSettings = {
       ...project.settings,
       ...(claimed.overrides || {}),
     };
+
+    const chunkDurationSec =
+      effectiveSettings.chunkDurationSec ||
+      claimed.chunkProgress?.chunkDurationSec ||
+      cfg.chunkDurationSec ||
+      env.VIDEO_CHUNK_DURATION_SEC;
+    const chunkOverlapSec =
+      claimed.chunkProgress?.chunkOverlapSec ??
+      cfg.chunkOverlapSec ??
+      env.VIDEO_CHUNK_OVERLAP_SEC;
 
     let regenerateSpec: Record<string, unknown> | undefined;
     if (claimed.type === 'regenerate_clip' && claimed.targetClipId) {
@@ -114,6 +285,14 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
       }
     }
 
+    let simulateInterruptAfterChunk = oneShotInterruptChunkByJob.get(jobId);
+    if (simulateInterruptAfterChunk !== undefined) {
+      oneShotInterruptChunkByJob.delete(jobId);
+    } else if (oneShotInterruptNextJobChunk !== null) {
+      simulateInterruptAfterChunk = oneShotInterruptNextJobChunk;
+      oneShotInterruptNextJobChunk = null;
+    }
+
     const inputJsonPath = path.join(tempJobDir, 'job_input.json');
     const outputJsonPath = path.join(tempJobDir, 'job_result.json');
 
@@ -124,6 +303,12 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
         mode: claimed.type,
         sourceVideoPath: localVideoPath,
         outputDir,
+        checkpointPath,
+        maxDurationSec: Math.min(env.MAX_VIDEO_DURATION_SEC, cfg.maxVideoDurationSec || 36000),
+        chunkDurationSec,
+        chunkOverlapSec,
+        simulateInterruptAfterChunk:
+          simulateInterruptAfterChunk !== undefined ? simulateInterruptAfterChunk : -1,
         ffmpegPath: env.FFMPEG_PATH,
         ffprobePath: env.FFPROBE_PATH,
         whisperModelSize: env.WHISPER_MODEL_SIZE,
@@ -143,8 +328,12 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
       'utf8'
     );
 
-    let lastStage = 'importing';
     let stderrAccumulator = '';
+    // Scale timeout dynamically with video length (at least JOB_TIMEOUT_MS, up to 4 hours for 10h video)
+    const dynamicTimeoutMs = Math.max(
+      env.JOB_TIMEOUT_MS,
+      Math.min(4 * 3600 * 1000, Math.round(video.durationSec * 400) + 300000)
+    );
 
     await new Promise<void>((resolve, reject) => {
       const child = spawn(
@@ -158,39 +347,73 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
 
       const timeoutTimer = setTimeout(() => {
         child.kill('SIGKILL');
-        reject(new Error(`Processing job timed out after ${Math.round(env.JOB_TIMEOUT_MS / 1000)}s`));
-      }, env.JOB_TIMEOUT_MS);
+        reject(
+          new Error(`Processing job timed out after ${Math.round(dynamicTimeoutMs / 1000)}s`)
+        );
+      }, dynamicTimeoutMs);
 
       let stdoutBuf = '';
+      let pendingProgressChain: Promise<unknown> = Promise.resolve();
+
+      const processStdoutLine = (line: string) => {
+        const trimmed = line.trim();
+        if (trimmed.startsWith('CF_EVENT:')) {
+          try {
+            const evt = JSON.parse(trimmed.slice('CF_EVENT:'.length));
+            lastStage = evt.stage || lastStage;
+            pendingProgressChain = pendingProgressChain
+              .then(() =>
+                ProcessingJob.findByIdAndUpdate(jobId, {
+                  $set: {
+                    stage: evt.stage,
+                    progressPercent: evt.percent,
+                    currentMessage: evt.message,
+                  },
+                  $push: {
+                    stageHistory: {
+                      stage: evt.stage,
+                      startedAt: new Date(),
+                      message: evt.message,
+                    },
+                  },
+                }).exec()
+              )
+              .catch(() => undefined);
+          } catch {
+            // ignore malformed log line
+          }
+        } else if (trimmed.startsWith('CF_CHECKPOINT:')) {
+          try {
+            const cp = JSON.parse(trimmed.slice('CF_CHECKPOINT:'.length));
+            pendingProgressChain = pendingProgressChain
+              .then(() =>
+                ProcessingJob.findByIdAndUpdate(jobId, {
+                  $set: {
+                    chunkProgress: {
+                      enabled: Boolean(cp.enabled),
+                      chunkDurationSec: Number(cp.chunkDurationSec || chunkDurationSec),
+                      chunkOverlapSec: Number(cp.chunkOverlapSec || chunkOverlapSec),
+                      totalChunks: Number(cp.totalChunks || 1),
+                      completedChunks: Number(cp.completedChunks || 0),
+                      currentChunkIndex: Number(cp.currentChunkIndex || 0),
+                      checkpointPath,
+                    },
+                  },
+                }).exec()
+              )
+              .catch(() => undefined);
+          } catch {
+            // ignore malformed checkpoint line
+          }
+        }
+      };
+
       child.stdout.on('data', (chunk: Buffer) => {
         stdoutBuf += chunk.toString('utf8');
         const lines = stdoutBuf.split('\n');
         stdoutBuf = lines.pop() || '';
-
         for (const line of lines) {
-          const trimmed = line.trim();
-          if (trimmed.startsWith('CF_EVENT:')) {
-            try {
-              const evt = JSON.parse(trimmed.slice('CF_EVENT:'.length));
-              lastStage = evt.stage || lastStage;
-              void ProcessingJob.findByIdAndUpdate(jobId, {
-                $set: {
-                  stage: evt.stage,
-                  progressPercent: evt.percent,
-                  currentMessage: evt.message,
-                },
-                $push: {
-                  stageHistory: {
-                    stage: evt.stage,
-                    startedAt: new Date(),
-                    message: evt.message,
-                  },
-                },
-              }).exec();
-            } catch {
-              // ignore malformed log line
-            }
-          }
+          processStdoutLine(line);
         }
       });
 
@@ -207,26 +430,34 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
       child.on('close', (code) => {
         clearTimeout(timeoutTimer);
         activeSubprocesses.delete(jobId);
+        if (stdoutBuf.trim()) {
+          processStdoutLine(stdoutBuf);
+          stdoutBuf = '';
+        }
 
-        if (cancelledJobIds.has(jobId)) {
-          reject(new Error('JOB_CANCELLED_BY_USER'));
-          return;
-        }
-        if (code !== 0) {
-          const cfErrMatch = stderrAccumulator.match(/CF_ERROR:(\{.*\})/);
-          if (cfErrMatch) {
-            try {
-              const parsedErr = JSON.parse(cfErrMatch[1]);
-              reject(new Error(`${lastStage}: ${parsedErr.error}`));
-              return;
-            } catch {
-              // fall through
-            }
+        void pendingProgressChain.finally(() => {
+          if (cancelledJobIds.has(jobId)) {
+            reject(new Error('JOB_CANCELLED_BY_USER'));
+            return;
           }
-          reject(new Error(`Processor exited with code ${code}: ${stderrAccumulator.slice(-300)}`));
-          return;
-        }
-        resolve();
+          if (code !== 0) {
+            const cfErrMatch = stderrAccumulator.match(/CF_ERROR:(\{.*\})/);
+            if (cfErrMatch) {
+              try {
+                const parsedErr = JSON.parse(cfErrMatch[1]);
+                reject(new Error(`${lastStage}: ${parsedErr.error}`));
+                return;
+              } catch {
+                // fall through
+              }
+            }
+            reject(
+              new Error(`Processor exited with code ${code}: ${stderrAccumulator.slice(-300)}`)
+            );
+            return;
+          }
+          resolve();
+        });
       });
     });
 
@@ -236,7 +467,6 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
 
     const result = JSON.parse(fs.readFileSync(outputJsonPath, 'utf8'));
 
-    // Persist analyzed transcript & scene metadata onto Video
     video.transcript = result.transcript || [];
     video.scenes = result.scenes || [];
     video.transcriptionEngine = result.transcriptionEngine;
@@ -244,7 +474,6 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
     video.status = 'analyzed';
     await video.save();
 
-    // Save rendered clips & thumbnails to configured StorageAdapter + create Clip documents
     const createdClipIds: string[] = [];
     const renderedClips: any[] = result.clips || [];
 
@@ -323,7 +552,7 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
       }
     }
 
-    // Calculate actual credit cost and settle reserved wallet credits
+    // Deduct credits ONLY after successful rendering & validation
     const actualCost =
       claimed.type === 'regenerate_clip'
         ? Math.min(claimed.creditsReserved, 5)
@@ -365,6 +594,8 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
       },
     });
 
+    removeFileSafe(checkpointPath);
+
     await Notification.create({
       userId: claimed.userId,
       type: 'job_completed',
@@ -379,20 +610,53 @@ export async function executeProcessingJob(jobId: string): Promise<void> {
       creditsDeducted: deducted,
     });
   } catch (err: any) {
+    const errCode = String(err?.code || 'PIPELINE_EXECUTION_ERROR');
+    const errMessage = String(err?.message || 'Video processing pipeline failed');
     const isCancelled =
-      cancelledJobIds.has(jobId) || String(err?.message || '').includes('JOB_CANCELLED_BY_USER');
+      cancelledJobIds.has(jobId) ||
+      errCode === 'JOB_CANCELLED' ||
+      errMessage.includes('JOB_CANCELLED_BY_USER');
 
     if (isCancelled) {
       cancelledJobIds.delete(jobId);
+      removeFileSafe(checkpointPath);
       await handleJobCancellationCleanup(jobId, String(project._id));
-    } else {
-      await failAndReleaseJob(
-        jobId,
-        'PIPELINE_EXECUTION_ERROR',
-        err?.message || 'Video processing pipeline failed',
-        'rendering'
-      );
+      return;
     }
+
+    const canAutoRetry =
+      !options?.disableAutoRetry &&
+      !NON_RETRYABLE_ERROR_CODES.has(errCode) &&
+      claimed.attempts < (claimed.maxAttempts || 3) &&
+      fs.existsSync(checkpointPath);
+
+    if (canAutoRetry) {
+      logger.warn('Transient worker interruption; re-queueing job from saved chunk checkpoint', {
+        jobId,
+        attempt: claimed.attempts,
+        maxAttempts: claimed.maxAttempts,
+        errMessage,
+      });
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: {
+          status: 'queued',
+          currentMessage: `Interrupted during chunk processing (attempt ${claimed.attempts}/${claimed.maxAttempts}) — resuming from saved checkpoint...`,
+        },
+        $push: {
+          stageHistory: {
+            stage: lastStage,
+            startedAt: new Date(),
+            message: `Auto-resuming from checkpoint after interruption: ${errMessage.slice(0, 140)}`,
+          },
+        },
+      });
+      const { enqueueProcessingJob } = await import('../queues/videoQueue');
+      await enqueueProcessingJob(jobId);
+      return;
+    }
+
+    removeFileSafe(checkpointPath);
+    await failAndReleaseJob(jobId, errCode, errMessage, lastStage);
   } finally {
     removeDirSafe(tempJobDir);
   }
@@ -429,6 +693,8 @@ export async function failAndReleaseJob(
 ): Promise<void> {
   const job = await ProcessingJob.findById(jobId);
   if (!job) return;
+
+  removeFileSafe(getJobCheckpointPath(jobId));
 
   if (!job.creditReservationReleased && job.creditsReserved > 0) {
     await releaseReservedCredits({

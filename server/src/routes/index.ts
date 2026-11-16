@@ -23,11 +23,14 @@ import {
   resetPasswordSchema,
   updateProfileSchema,
   verifyPaymentSchema,
+  youtubeFetchSchema,
+  youtubeGenerateClipsSchema,
 } from '../validators/schemas';
 
 import { authController } from '../controllers/authController';
 import { userController } from '../controllers/userController';
 import { projectController, videoController } from '../controllers/projectAndVideoController';
+import { youtubeController } from '../controllers/youtubeController';
 import { clipController } from '../controllers/clipController';
 import {
   jobController,
@@ -170,6 +173,24 @@ videosRouter.post(
   asyncHandler(videoController.importFromUrl)
 );
 apiV1Router.use('/videos', videosRouter);
+
+/* --- /api/v1/youtube --- */
+const youtubeRouter = Router();
+youtubeRouter.get('/adapter-status', asyncHandler(youtubeController.adapterStatus));
+youtubeRouter.post(
+  '/fetch',
+  requireAuth,
+  validateBody(youtubeFetchSchema),
+  asyncHandler(youtubeController.fetchVideo)
+);
+youtubeRouter.post(
+  '/generate',
+  requireAuth,
+  uploadAndJobLimiter,
+  validateBody(youtubeGenerateClipsSchema),
+  asyncHandler(youtubeController.generateClips)
+);
+apiV1Router.use('/youtube', youtubeRouter);
 
 /* --- /api/v1/clips --- */
 const clipsRouter = Router();

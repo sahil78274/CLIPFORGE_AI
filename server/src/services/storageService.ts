@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
+import { pipeline } from 'stream/promises';
 import {
   S3Client,
   PutObjectCommand,
@@ -118,8 +119,7 @@ class S3StorageAdapter implements StorageAdapter {
       new GetObjectCommand({ Bucket: this.bucket, Key: key })
     );
     if (!resp.Body) throw new NotFoundError('S3 object body empty');
-    const bytes = await resp.Body.transformToByteArray();
-    fs.writeFileSync(outPath, Buffer.from(bytes));
+    await pipeline(resp.Body as unknown as NodeJS.ReadableStream, fs.createWriteStream(outPath));
     return outPath;
   }
 

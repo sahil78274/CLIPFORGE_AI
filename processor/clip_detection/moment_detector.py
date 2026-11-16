@@ -28,6 +28,26 @@ def _classify_text(text: str) -> str:
     return best_cat
 
 
+def _build_moment_prompt(
+    segments: List[Dict[str, Any]],
+    min_dur: float,
+    max_dur: float,
+    clip_count: int,
+) -> str:
+    compact = [
+        {"start": s["start"], "end": s["end"], "text": s["text"]}
+        for s in segments[:140]
+    ]
+    return (
+        f"Select up to {clip_count + 2} non-overlapping complete-thought video clip moments "
+        f"between {min_dur}s and {max_dur}s from these global-timestamped transcript segments. "
+        "Preserve the exact global startSec and endSec values from the provided segments and never cut mid-sentence. "
+        "Return a JSON array (or object with key 'moments') of items with keys: "
+        "startSec, endSec, title, category (hook|educational|insight|surprising|emotional|funny|discussion), "
+        "reason, engagementScore (50-95).\nSegments:\n" + json.dumps(compact)
+    )
+
+
 def _try_gemini_moment_scoring(
     segments: List[Dict[str, Any]],
     gemini_api_key: str,
@@ -36,20 +56,10 @@ def _try_gemini_moment_scoring(
     max_dur: float,
     clip_count: int,
 ) -> List[Dict[str, Any]]:
-    if not gemini_api_key or len(gemini_api_key.strip()) < 10:
+    if not gemini_api_key or len(gemini_api_key.strip()) < 10 or not segments:
         return []
 
-    compact = [
-        {"start": s["start"], "end": s["end"], "text": s["text"]}
-        for s in segments[:120]
-    ]
-    prompt = (
-        f"Select up to {clip_count + 2} non-overlapping complete-thought video clip moments "
-        f"between {min_dur}s and {max_dur}s from these transcript segments. "
-        "Never cut mid-sentence. Return JSON array of objects with keys: "
-        "startSec, endSec, title, category (hook|educational|insight|surprising|emotional|funny|discussion), "
-        "reason, engagementScore (50-95).\nSegments:\n" + json.dumps(compact)
-    )
+    prompt = _build_moment_prompt(segments, min_dur, max_dur, clip_count)
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
         f"{gemini_model}:generateContent?key={gemini_api_key}"
@@ -66,12 +76,64 @@ def _try_gemini_moment_scoring(
         method="POST",
     )
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        with urllib.request.urlopen(req, timeout=25) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
         txt = payload["candidates"][0]["content"]["parts"][0]["text"]
-        arr = json.loads(txt)
-        if isinstance(arr, list):
-            return arr
+        parsed = json.loads(txt)
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict) and isinstance(parsed.get("moments"), list):
+            return parsed["moments"]
+    except Exception:
+        return []
+    return []
+
+
+def _try_openai_moment_scoring(
+    segments: List[Dict[str, Any]],
+    openai_api_key: str,
+    openai_base_url: str,
+    openai_model: str,
+    min_dur: float,
+    max_dur: float,
+    clip_count: int,
+) -> List[Dict[str, Any]]:
+    if not openai_api_key or len(openai_api_key.strip()) < 8 or not segments:
+        return []
+
+    prompt = _build_moment_prompt(segments, min_dur, max_dur, clip_count)
+    url = f"{openai_base_url.rstrip('/')}/chat/completions"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(
+            {
+                "model": openai_model or "gpt-4o-mini",
+                "response_format": {"type": "json_object"},
+                "temperature": 0.3,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Return JSON object {\"moments\": [...]} with engaging short-form video moments.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+            }
+        ).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openai_api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=25) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        txt = payload["choices"][0]["message"]["content"]
+        parsed = json.loads(txt)
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict) and isinstance(parsed.get("moments"), list):
+            return parsed["moments"]
     except Exception:
         return []
     return []
@@ -85,27 +147,40 @@ def detect_candidate_moments(
     min_dur: float,
     max_dur: float,
     clip_count: int,
+    ai_provider: str = "gemini",
     gemini_api_key: str = "",
     gemini_model: str = "gemini-2.5-flash",
+    openai_api_key: str = "",
+    openai_base_url: str = "https://api.openai.com/v1",
+    openai_model: str = "gpt-4o-mini",
+    window_start_sec: float = 0.0,
+    window_end_sec: float = 0.0,
 ) -> Dict[str, Any]:
-    # Adapt target duration bounds gracefully if source video is shorter than preset
-    effective_max = min(max_dur, duration_sec)
-    effective_min = min(min_dur, max(3.0, duration_sec / max(1, clip_count + 0.5)))
+    effective_window_end = window_end_sec if window_end_sec > window_start_sec else duration_sec
+    window_span = max(1.0, effective_window_end - window_start_sec)
+
+    effective_max = min(max_dur, duration_sec, max(max_dur, window_span))
+    effective_min = min(min_dur, max(3.0, duration_sec / max(1.0, clip_count + 0.5)))
     if effective_max < effective_min:
-        effective_max = duration_sec
+        effective_max = min(duration_sec, max(effective_min, window_span))
 
-    ai_candidates = _try_gemini_moment_scoring(
-        segments, gemini_api_key, gemini_model, effective_min, effective_max, clip_count
-    )
+    if ai_provider == "openai_compatible" and openai_api_key:
+        ai_candidates = _try_openai_moment_scoring(
+            segments, openai_api_key, openai_base_url, openai_model, effective_min, effective_max, clip_count
+        )
+    else:
+        ai_candidates = _try_gemini_moment_scoring(
+            segments, gemini_api_key, gemini_model, effective_min, effective_max, clip_count
+        )
+
     used_ai = len(ai_candidates) > 0
-
     candidates: List[Dict[str, Any]] = []
 
     if used_ai:
         for item in ai_candidates:
-            s_t = max(0.0, float(item.get("startSec", 0.0)))
+            s_t = max(0.0, float(item.get("startSec", window_start_sec)))
             e_t = min(duration_sec, float(item.get("endSec", 0.0)))
-            if e_t - s_t < 2.5:
+            if e_t - s_t < 2.5 or e_t - s_t > effective_max * 1.35:
                 continue
             seg_texts = [
                 seg["text"]
@@ -117,15 +192,15 @@ def detect_candidate_moments(
                     "startSec": round(s_t, 2),
                     "endSec": round(e_t, 2),
                     "durationSec": round(e_t - s_t, 2),
-                    "transcript": " ".join(seg_texts).strip(),
+                    "transcript": " ".join(seg_texts).strip() or str(item.get("title") or ""),
                     "title": str(item.get("title") or "AI Selected Highlight"),
                     "category": str(item.get("category") or "insight"),
-                    "reason": str(item.get("reason") or "Complete high-engagement moment"),
-                    "engagementScore": max(45, min(96, int(item.get("engagementScore", 78)))),
+                    "reason": str(item.get("reason") or "AI-selected complete engaging moment."),
+                    "engagementScore": max(45, min(96, int(item.get("engagementScore", 82)))),
                 }
             )
 
-    # Always generate deterministic sentence-boundary candidates as supplement / primary offline engine
+    # Deterministic sentence-boundary + acoustic + visual moment scoring
     n_segs = len(segments)
     for i in range(n_segs):
         start_t = float(segments[i]["start"])
@@ -144,12 +219,10 @@ def detect_candidate_moments(
             full_text = " ".join(gathered_texts).strip()
             ends_cleanly = full_text.endswith((".", "!", "?")) or j == n_segs - 1
 
-            # Acoustic energy score
             e_vals = [x["rms"] for x in energy_timeline if start_t <= x["t"] <= end_t]
             mean_rms = sum(e_vals) / len(e_vals) if e_vals else 0.03
             energy_bonus = min(15.0, mean_rms * 180.0)
 
-            # Visual scene & face score
             ov_scenes = [sc for sc in scenes if sc["end"] > start_t and sc["start"] < end_t]
             has_face = any(sc.get("hasFace") for sc in ov_scenes)
             motion_bonus = (
@@ -163,7 +236,9 @@ def detect_candidate_moments(
             hook_bonus = 7.0 if ("?" in full_text[:80] or category in ("hook", "surprising")) else 3.0
             face_bonus = 6.0 if has_face else 0.0
 
-            raw_score = int(round(54.0 + energy_bonus + motion_bonus + sentence_bonus + hook_bonus + face_bonus))
+            raw_score = int(
+                round(54.0 + energy_bonus + motion_bonus + sentence_bonus + hook_bonus + face_bonus)
+            )
             score = max(50, min(95, raw_score))
 
             words_preview = [w for w in full_text.replace(".", "").split() if len(w) > 2][:6]
@@ -192,21 +267,24 @@ def detect_candidate_moments(
             if span >= effective_min:
                 break
 
-    # Fallback if source video is a single short segment
-    if not candidates and duration_sec >= 1.0:
-        end_t = round(min(duration_sec, effective_max), 2)
-        full_txt = " ".join(s["text"] for s in segments).strip() or "Full video highlight."
-        candidates.append(
-            {
-                "startSec": 0.0,
-                "endSec": end_t,
-                "durationSec": end_t,
-                "transcript": full_txt,
-                "title": "Primary Video Highlight",
-                "category": "hook",
-                "reason": "Complete source highlight window.",
-                "engagementScore": 74,
-            }
-        )
+    if not candidates and window_span >= 1.5:
+        fb_start = round(float(segments[0]["start"]) if segments else window_start_sec, 2)
+        fb_end = round(min(duration_sec, fb_start + min(effective_max, window_span)), 2)
+        if fb_end - fb_start >= 1.5:
+            full_txt = " ".join(s["text"] for s in segments).strip() or "Chapter highlight."
+            candidates.append(
+                {
+                    "startSec": fb_start,
+                    "endSec": fb_end,
+                    "durationSec": round(fb_end - fb_start, 2),
+                    "transcript": full_txt,
+                    "title": f"Highlight ({int(fb_start // 60)}m)",
+                    "category": "hook",
+                    "reason": "Complete chapter highlight window.",
+                    "engagementScore": 70,
+                }
+            )
 
-    return {"candidates": candidates, "usedAi": used_ai}
+    # Keep top candidates per chunk so checkpoint files remain compact even across 60+ chunks
+    candidates.sort(key=lambda c: (c.get("engagementScore", 0), c.get("durationSec", 0)), reverse=True)
+    return {"candidates": candidates[: max(12, clip_count * 4)], "usedAi": used_ai}

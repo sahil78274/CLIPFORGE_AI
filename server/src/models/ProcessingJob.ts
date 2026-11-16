@@ -28,6 +28,21 @@ export interface IProcessingJob extends Document {
     ffmpegAvailable: boolean;
     warnings: string[];
   };
+  chunkProgress?: {
+    enabled: boolean;
+    chunkDurationSec: number;
+    chunkOverlapSec: number;
+    totalChunks: number;
+    completedChunks: number;
+    currentChunkIndex: number;
+    checkpointPath?: string;
+  };
+  youtubeImport?: {
+    videoId: string;
+    canonicalUrl: string;
+    authorizedMediaUrl?: string;
+    metadata?: Record<string, unknown>;
+  };
   attempts: number;
   maxAttempts: number;
   creditsReserved: number;
@@ -73,8 +88,10 @@ const processingJobSchema = new Schema<IProcessingJob>(
       ffmpegAvailable: { type: Boolean, default: true },
       warnings: { type: [String], default: [] },
     },
+    chunkProgress: { type: Schema.Types.Mixed },
+    youtubeImport: { type: Schema.Types.Mixed },
     attempts: { type: Number, default: 0 },
-    maxAttempts: { type: Number, default: 2 },
+    maxAttempts: { type: Number, default: 3 },
     creditsReserved: { type: Number, default: 0 },
     creditsDeducted: { type: Number, default: 0 },
     creditReservationReleased: { type: Boolean, default: false },

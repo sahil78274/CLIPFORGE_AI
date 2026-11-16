@@ -1,18 +1,27 @@
 # ClipForge AI
 
-**ClipForge AI** is a full-stack AI video repurposing SaaS platform that converts long-form videos (podcasts, webinars, interviews, tutorials, talks, and commentaries) into platform-ready short-form clips (`9:16`, `1:1`, `16:9`) with automated transcription, scene & moment analysis, speaker-aware reframing, animated word-synced burned-in captions, broadcast loudness normalization, and platform-specific social copy.
+**ClipForge AI** is a full-stack AI video repurposing SaaS platform that converts YouTube links and long-form videos up to **10 hours (`36,000` seconds)** (podcasts, webinars, interviews, tutorials, talks, and keynotes) into platform-ready short-form clips (`9:16`, `1:1`, `16:9`) with automated Faster-Whisper transcription, AI moment detection, speaker-aware reframing, animated word-synced burned-in captions, broadcast loudness normalization, and platform-specific social copy.
 
 ---
 
 ## Core Capabilities
 
-- **Public Marketing & Auth Experience**: 11 responsive dark-first public pages (`Home`, `Features`, `How It Works`, `Pricing`, `About`, `Contact`, `Login`, `Register`, `Forgot/Reset Password`, `Privacy Policy`, `Terms & Conditions`).
-- **Creator Studio Dashboard**: Real-time overview metrics, multi-step Create Clips wizard (drag-and-drop video upload + SSRF-safe public media URL import), Project Detail studio, live 12-stage Processing Queue with cancellation & retry, Clip Library with Range-enabled video preview, metadata editor, clip re-rendering, and Bulk ZIP export.
+- **YouTube URL-to-AI-Clips System (Up to 10 Hours)**:
+  - Accepts standard YouTube watch URLs (`youtube.com/watch?v=...`), short links (`youtu.be/...`), Shorts (`youtube.com/shorts/...`), live VODs (`youtube.com/live/...`), and embeds (`youtube.com/embed/...`), validating URLs and extracting the canonical 11-character Video ID.
+  - **Strict Separation of Metadata & Media Acquisition**: Dedicated YouTube metadata extraction (`YouTube Data API v3` + `YouTube oEmbed` + sidecar manifests) is kept completely separate from actual video stream acquisition — oEmbed JSON/thumbnails are never treated as downloadable video media.
+  - **Configurable Authorized Media-Source Adapter**: Pluggable `YouTubeMediaSourceAdapter` (`composite`, `owner_export_dir`, `authorized_http_provider`, `custom_command`, plus owner-authorized signed media URLs) streams real video containers directly to disk, validates codecs/streams with `FFprobe`, and surfaces clear, actionable errors when actual media cannot be accessed.
+- **10-Hour Chunk-Based Streaming Media Engine (Constant Bounded RAM)**:
+  - Processes videos up to **10 hours (`36,000`s)** without loading the complete video or uncompressed audio into RAM.
+  - Divides long videos into configurable chunks (default `600`s = 10-minute windows with `5`s overlap), extracts 16 kHz PCM audio per chunk via `O(1)` container timestamp seeking (`-ss` before `-i`), immediately deletes temporary chunk WAVs after analysis, maintains exact global video timestamps across chunks, and deduplicates cross-seam speech and clip candidates.
+  - **Atomic Checkpoint Persistence & Crash Recovery**: Writes atomic per-chunk JSON checkpoints (`checkpoints/job_<id>.json`) so transient worker interruptions and server restarts (`recoverOrphanedJobsOnStartup`) automatically resume from the last completed chunk without repeating completed work or double-charging credits.
+- **Creator Studio Dashboard**:
+  - Dedicated **YouTube Link** tab in **Create Short Clips** (plus quick-launch bar on Dashboard Overview) with Paste URL input, **Fetch Video** preview card (thumbnail, title, channel, duration, media-access status, chunk plan), clip & chunk size controls, **Generate Clips** trigger, live inline 12-stage + chunk progress tracker, and inline **MP4 preview & Bulk ZIP download**.
+  - Project Detail studio, Processing Queue with live `Chunk X/Y` badges, cancellation & retry, and Clip Library with Range-enabled video streaming, metadata editor, and clip re-rendering.
 - **12-Stage Python + FFmpeg + OpenCV Media Pipeline**:
   `Importing` → `Validating` → `Extracting audio` → `Transcribing` → `Detecting scenes` → `Analyzing content` → `Detecting interesting moments` → `Selecting clips` → `Editing` → `Rendering` → `Validating output` → `Completed`.
-- **Immutable Credit Wallet & Accounting**: Welcome credits on signup, atomic credit reservation before processing, settlement on completion, automatic idempotent credit release on job failure or cancellation, and append-only `CreditTransaction` ledger.
+- **Immutable Credit Wallet & Accounting**: Welcome credits on signup, atomic credit reservation before processing, settlement **only after all rendered clips pass FFprobe output validation**, automatic 100% credit refund on job failure or cancellation, and append-only `CreditTransaction` ledger.
 - **Razorpay INR Payments + Dev Sandbox Simulator**: Server-side order creation, HMAC-SHA256 checkout & raw-body webhook signature verification, duplicate webhook replay protection, refund credit reversal, and an explicitly labelled development sandbox mode when live Razorpay credentials are `NOT CONFIGURED`.
-- **Configurable AI Provider Architecture**: Pluggable `AIProvider` supporting **Google Gemini** (`GEMINI_API_KEY`), OpenAI-compatible endpoints, and deterministic transcript-grounded NLP metadata fallback when external LLM keys are `NOT CONFIGURED`.
+- **Configurable AI Provider Architecture**: Pluggable `AIProvider` supporting **Google Gemini** (`GEMINI_API_KEY`), OpenAI-compatible endpoints (`OPENAI_API_KEY`), and deterministic transcript-grounded NLP scoring/metadata fallback when external LLM keys are `NOT CONFIGURED`.
 - **Admin Console & Audit Trail**: Protected admin routes for system health, user search/suspend/restore, manual credit adjustments, job & payment monitoring, configurable credit packages & system limits, and `AdminAuditLog` records.
 
 ---
@@ -22,10 +31,10 @@
 ```text
 clipFORGE_AI/
 ├── client/          # React 18 + Vite 6 + TypeScript + Tailwind CSS + Framer Motion + TanStack Query + Zustand
-├── server/          # Node.js + Express + TypeScript + Mongoose + BullMQ/Local Worker + Zod + Vitest
-├── processor/       # Python 3.11 + FFmpeg + FFprobe + OpenCV + Faster-Whisper / PocketSphinx 12-stage engine
-├── shared/          # Shared TypeScript domain constants, pipeline stages, presets, and interfaces
-├── scripts/         # Utility scripts (e.g. generate-sample-video.py for local E2E testing)
+├── server/          # Node.js + Express + TypeScript + Mongoose + BullMQ/Local Worker + YouTube Import & Adapters
+├── processor/       # Python 3.11 + FFmpeg + FFprobe + OpenCV + Faster-Whisper 12-stage chunked streaming engine
+├── shared/          # Shared TypeScript domain constants, 10h chunk presets, credit estimator, and interfaces
+├── scripts/         # Utility & fixture scripts (generate-sample-video.py, generate-long-video-fixture.py)
 ├── docs/            # Complete architecture, API, database, pipeline, payments, security, and deployment docs
 └── docker-compose.yml
 ```
@@ -96,6 +105,49 @@ npm run dev
 
 ---
 
+## Configuring YouTube URL-to-Clips & Long-Video Processing
+
+ClipForge AI strictly separates **YouTube metadata discovery** from **authorized video media acquisition** in `.env`:
+
+```dotenv
+# Maximum video duration (36000s = 10 hours) and chunked processing defaults
+MAX_VIDEO_DURATION_SEC=36000
+VIDEO_CHUNK_DURATION_SEC=600
+VIDEO_CHUNK_OVERLAP_SEC=5
+JOB_TIMEOUT_MS=7200000
+
+# 1. YouTube Metadata Discovery (Separated from video download)
+YOUTUBE_DATA_API_KEY=
+YOUTUBE_OEMBED_ENDPOINT=https://www.youtube.com/oembed
+
+# 2. Configurable Authorized YouTube Media-Source Adapter
+# Modes: composite | owner_export_dir | authorized_http_provider | custom_command
+YOUTUBE_MEDIA_ADAPTER=composite
+
+# Option A — Owner-Authorized Exports Directory:
+# Place <videoId>.mp4 (and optional <videoId>.meta.json) in this folder, or pass an
+# owner-authorized signed HTTPS media URL in the dashboard / API request.
+YOUTUBE_AUTHORIZED_EXPORTS_DIR=./server/storage/authorized-youtube-exports
+
+# Option B — Authorized HTTP Media Bridge Service:
+# Receives ?videoId={videoId}&url={url} and returns either a streamed video/* container
+# or JSON {"downloadUrl": "https://..."}.
+YOUTUBE_MEDIA_PROVIDER_URL=
+YOUTUBE_MEDIA_PROVIDER_TOKEN=
+YOUTUBE_MEDIA_PROVIDER_TIMEOUT_MS=1800000
+
+# Option C — Authorized Custom Media Acquisition Command:
+# Placeholders {videoId}, {url}, and {outputTemplate} are substituted safely without shell interpolation.
+YOUTUBE_MEDIA_DOWNLOAD_CMD=
+```
+
+### Key YouTube REST Endpoints (`/api/v1/youtube`)
+- `GET /api/v1/youtube/adapter-status` — Reports active media-source adapter, configuration status, max duration (`36,000`s), and setup guidance.
+- `POST /api/v1/youtube/fetch` — Validates YouTube URL, extracts 11-char `videoId`, fetches separated metadata (`title`, `channelName`, `thumbnailUrl`, `durationSec`), checks authorized media availability, and returns the chunk plan & credit estimate.
+- `POST /api/v1/youtube/generate` — Verifies authorized media availability (never fakes imports from oEmbed metadata), reserves credits atomically, creates the project & recoverable background job, and dispatches the 12-stage chunked pipeline.
+
+---
+
 ## Default Development Bootstrap Account
 
 On startup, `ensureSystemBootstrap()` seeds default configurable credit packages, system limits, and a bootstrap administrator account (configurable via `.env`):
@@ -108,18 +160,25 @@ On startup, `ensureSystemBootstrap()` seeds default configurable credit packages
 
 ---
 
-## Generating a Sample Test Video & Running Automated E2E Tests
+## Generating Sample / Multi-Hour Test Videos & Running Automated E2E Tests
 
-Generate a real multi-scene 1280x720 H.264 + AAC MP4 video for local testing:
+Generate a short multi-scene 1280x720 H.264 + AAC MP4 video:
 ```bash
 ./.venv/bin/python scripts/generate-sample-video.py --output ./sample_input.mp4
 ```
 
-Run full monorepo TypeScript validation, production builds, and the automated integration test suite (covering auth, SSRF protection, real 12-stage video rendering, FFprobe verification, signed downloads, Bulk ZIP export, credit reserve/deduct/failure-release, payment HMAC + webhook replay protection, and RBAC):
+Generate a multi-hour (e.g. 1-hour = `3600`s, 5-hour = `18000`s, or 10-hour = `36000`s) H.264 + AAC + subtitle MP4 fixture in `YOUTUBE_AUTHORIZED_EXPORTS_DIR` for local YouTube testing:
+```bash
+./.venv/bin/python scripts/generate-long-video-fixture.py \
+  --output ./server/storage/authorized-youtube-exports/dQw4w9WgXcQ.mp4 \
+  --duration 3600
+```
+
+Run full monorepo TypeScript validation, production builds, and all 14 automated end-to-end integration tests (covering short YouTube videos, 1h / 5h / 10h chunked videos, invalid URLs, private/unavailable videos, failed media access credit refunds, interrupted processing & server-restart checkpoint recovery, direct uploads, Razorpay HMAC verification, and RBAC):
 ```bash
 npm run typecheck
 npm run build
-npm test
+npm --workspace=server run test -- --fileParallelism=false
 ```
 
 ---
@@ -130,11 +189,13 @@ ClipForge AI never hardcodes secrets or fakes external integrations. Any unconfi
 
 | Integration | `.env` Keys | Behavior When Unconfigured |
 | :--- | :--- | :--- |
-| **Google Gemini AI** | `GEMINI_API_KEY`, `GEMINI_MODEL` | Marked `NOT CONFIGURED`; uses deterministic transcript-grounded NLP metadata generator. |
+| **YouTube Data API v3** | `YOUTUBE_DATA_API_KEY` | Falls back to YouTube oEmbed + authorized export container `FFprobe` inspection for metadata & duration. |
+| **YouTube Media Source** | `YOUTUBE_MEDIA_ADAPTER`, `YOUTUBE_AUTHORIZED_EXPORTS_DIR`, `YOUTUBE_MEDIA_PROVIDER_URL`, `YOUTUBE_MEDIA_DOWNLOAD_CMD` | Uses `owner_export_dir` / signed export URLs when provided; blocks clip generation with clear setup instructions when no authorized media stream is accessible. |
+| **Google Gemini / OpenAI** | `AI_PROVIDER`, `GEMINI_API_KEY`, `OPENAI_API_KEY` | Marked `NOT CONFIGURED`; uses deterministic transcript-grounded NLP moment scoring & metadata generator. |
 | **Faster-Whisper Weights** | `WHISPER_MODEL_SIZE`, `WHISPER_MODEL_PATH` | Downloads CTranslate2 weights when HuggingFace is reachable, or uses local `WHISPER_MODEL_PATH`; falls back offline to embedded subtitles + PocketSphinx ASR. |
 | **Razorpay Live/Test INR** | `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`, `RAZORPAY_WEBHOOK_SECRET` | Marked `NOT CONFIGURED`; non-production dev environments expose a clearly labelled **Sandbox Simulator** whose volume is never counted as live revenue. |
-| **Redis / BullMQ** | `REDIS_URL` | Automatically runs persistent MongoDB-backed `local_worker` queue with crash recovery. |
-| **S3 / Cloudflare R2** | `STORAGE_PROVIDER=s3`, `S3_*` | Uses local storage adapter (`server/storage`) with HMAC-signed short-lived stream/download tokens. |
+| **Redis / BullMQ** | `REDIS_URL` | Automatically runs persistent MongoDB-backed `local_worker` queue with startup checkpoint crash recovery. |
+| **S3 / Cloudflare R2** | `STORAGE_PROVIDER=s3`, `S3_*` | Uses streaming local storage adapter (`server/storage`) with HMAC-signed short-lived stream/download tokens. |
 
 ---
 

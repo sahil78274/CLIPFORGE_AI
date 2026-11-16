@@ -148,6 +148,11 @@ export const ProcessingQueuePage: React.FC = () => {
                       >
                         {projTitle}
                       </Link>
+                      {job.chunkProgress && job.chunkProgress.totalChunks > 1 && (
+                        <Badge variant="brand">
+                          Chunk {job.chunkProgress.completedChunks}/{job.chunkProgress.totalChunks}
+                        </Badge>
+                      )}
                       <Badge
                         variant={
                           job.status === 'completed'

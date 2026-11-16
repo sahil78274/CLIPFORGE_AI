@@ -80,7 +80,11 @@ const envSchema = z.object({
 
   REDIS_URL: z.string().optional().default(''),
   WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(8).default(2),
-  JOB_TIMEOUT_MS: z.coerce.number().int().min(30000).default(600000),
+  JOB_TIMEOUT_MS: z.coerce.number().int().min(30000).default(7200000),
+
+  VIDEO_CHUNK_DURATION_SEC: z.coerce.number().int().min(15).max(3600).default(600),
+  VIDEO_CHUNK_OVERLAP_SEC: z.coerce.number().min(0).max(30).default(5),
+  MAX_VIDEO_DURATION_SEC: z.coerce.number().int().min(60).max(43200).default(36000),
 
   STORAGE_PROVIDER: z.enum(['local', 's3']).default('local'),
   LOCAL_STORAGE_DIR: z.string().default(path.resolve(__dirname, '../../storage')),
@@ -106,6 +110,17 @@ const envSchema = z.object({
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
 
   YOUTUBE_DATA_API_KEY: z.string().optional().default(''),
+  YOUTUBE_OEMBED_ENDPOINT: z.string().default('https://www.youtube.com/oembed'),
+  YOUTUBE_MEDIA_ADAPTER: z
+    .enum(['composite', 'owner_export_dir', 'authorized_http_provider', 'custom_command'])
+    .default('composite'),
+  YOUTUBE_AUTHORIZED_EXPORTS_DIR: z
+    .string()
+    .default(path.resolve(__dirname, '../../authorized_youtube_exports')),
+  YOUTUBE_MEDIA_PROVIDER_URL: z.string().optional().default(''),
+  YOUTUBE_MEDIA_PROVIDER_TOKEN: z.string().optional().default(''),
+  YOUTUBE_MEDIA_COMMAND_BIN: z.string().optional().default(''),
+  YOUTUBE_MEDIA_COMMAND_ARGS_JSON: z.string().optional().default(''),
   ALLOW_DIRECT_MEDIA_URL_IMPORT: z
     .string()
     .default('true')
@@ -172,4 +187,7 @@ export const env = {
   TEMP_WORKING_DIR: path.isAbsolute(parsed.TEMP_WORKING_DIR)
     ? parsed.TEMP_WORKING_DIR
     : path.resolve(__dirname, '../..', parsed.TEMP_WORKING_DIR),
+  YOUTUBE_AUTHORIZED_EXPORTS_DIR: path.isAbsolute(parsed.YOUTUBE_AUTHORIZED_EXPORTS_DIR)
+    ? parsed.YOUTUBE_AUTHORIZED_EXPORTS_DIR
+    : path.resolve(__dirname, '../..', parsed.YOUTUBE_AUTHORIZED_EXPORTS_DIR),
 };

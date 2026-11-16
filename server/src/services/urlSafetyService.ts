@@ -181,8 +181,42 @@ export async function inspectVideoUrl(rawUrl: string): Promise<{
     };
   }
 
+  if (platform === 'youtube') {
+    try {
+      const { fetchYouTubeVideoMetadataAndAccess } = await import('./youtubeImportService');
+      const ytReport = await fetchYouTubeVideoMetadataAndAccess(rawUrl);
+      return {
+        valid: true,
+        platform: 'youtube',
+        importableDirectly: ytReport.mediaAccess.available,
+        requiresUploadFallback: !ytReport.mediaAccess.available,
+        reason: ytReport.mediaAccess.available
+          ? `Authorized YouTube media ready via ${ytReport.mediaAccess.adapterName}.`
+          : ytReport.mediaAccess.reason ||
+            'YouTube metadata verified, but no authorized media stream is available for this video. Use the YouTube tab with an authorized media source or upload your MP4 directly.',
+        metadata: {
+          title: ytReport.video.title,
+          author: ytReport.video.channelName,
+        },
+      };
+    } catch (err: any) {
+      if (err?.code === 'INVALID_YOUTUBE_URL' || err?.code === 'MISSING_YOUTUBE_VIDEO_ID') {
+        throw err;
+      }
+      return {
+        valid: true,
+        platform: 'youtube',
+        importableDirectly: false,
+        requiresUploadFallback: true,
+        reason:
+          err?.message ||
+          platCfg?.note ||
+          'Actual YouTube media requires an authorized media-source integration or direct MP4 upload.',
+      };
+    }
+  }
+
   if (
-    platform === 'youtube' ||
     platform === 'instagram' ||
     platform === 'facebook' ||
     platform === 'tiktok'

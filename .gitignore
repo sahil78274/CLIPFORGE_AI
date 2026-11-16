@@ -31,6 +31,7 @@ server/uploads/
 server/temp/
 server/logs/
 server/.data/
+server/authorized_youtube_exports/
 processor/temp/
 
 # OS & IDE files

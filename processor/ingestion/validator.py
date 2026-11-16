@@ -4,7 +4,11 @@ import subprocess
 from typing import Any, Dict
 
 
-def validate_source_media(source_path: str, ffprobe_path: str) -> Dict[str, Any]:
+def validate_source_media(
+    source_path: str,
+    ffprobe_path: str,
+    max_duration_sec: float = 36000.0,
+) -> Dict[str, Any]:
     if not os.path.isfile(source_path):
         raise RuntimeError(f"Source video file does not exist: {source_path}")
 
@@ -25,7 +29,7 @@ def validate_source_media(source_path: str, ffprobe_path: str) -> Dict[str, Any]
         ],
         capture_output=True,
         text=True,
-        timeout=30,
+        timeout=45,
         check=False,
     )
     if proc.returncode != 0:
@@ -35,12 +39,10 @@ def validate_source_media(source_path: str, ffprobe_path: str) -> Dict[str, Any]
     streams = data.get("streams") or []
     video_stream = next((s for s in streams if s.get("codec_type") == "video"), None)
     audio_stream = next((s for s in streams if s.get("codec_type") == "audio"), None)
-    subtitle_streams = [
-        s for s in streams if s.get("codec_type") == "subtitle"
-    ]
+    subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
 
     if not video_stream:
-        raise RuntimeError("No decodable video stream found in uploaded file")
+        raise RuntimeError("No decodable video stream found in media file")
 
     width = int(video_stream.get("width") or 0)
     height = int(video_stream.get("height") or 0)
@@ -53,6 +55,11 @@ def validate_source_media(source_path: str, ffprobe_path: str) -> Dict[str, Any]
     if width <= 0 or height <= 0 or duration_sec < 1.0:
         raise RuntimeError(
             f"Invalid video stream properties (width={width}, height={height}, duration={duration_sec:.2f}s)"
+        )
+
+    if duration_sec > max_duration_sec + 1.0:
+        raise RuntimeError(
+            f"Video duration ({duration_sec:.1f}s) exceeds maximum supported length ({max_duration_sec:.0f}s)"
         )
 
     rate_str = video_stream.get("avg_frame_rate") or video_stream.get("r_frame_rate") or "30/1"

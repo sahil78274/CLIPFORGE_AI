@@ -14,6 +14,7 @@ import {
 } from '../models';
 import { checkMediaBinaries } from '../services/mediaProbeService';
 import { getAIProvider } from '../services/aiService';
+import { getYouTubeMediaSourceAdapter } from '../services/youtubeMediaSourceAdapter';
 import {
   createPaymentOrder,
   isRazorpayLiveOrTestConfigured,
@@ -48,6 +49,7 @@ export const jobController = {
     ]);
 
     const ai = getAIProvider();
+    const ytAdapter = getYouTubeMediaSourceAdapter();
     const whisperCached = Boolean(
       env.WHISPER_MODEL_PATH && fs.existsSync(env.WHISPER_MODEL_PATH)
     );
@@ -62,6 +64,16 @@ export const jobController = {
           configured: ai.isConfigured(),
           model: ai.modelName,
           ...(!ai.isConfigured() ? { setupInstructions: ai.getSetupInstructions() } : {}),
+        },
+        youtube: {
+          adapterName: ytAdapter.name,
+          mediaAdapterConfigured: ytAdapter.isConfigured(),
+          youtubeDataApiConfigured: Boolean(
+            env.YOUTUBE_DATA_API_KEY && env.YOUTUBE_DATA_API_KEY.trim().length > 8
+          ),
+          maxDurationSec: Math.min(env.MAX_VIDEO_DURATION_SEC, cfg.maxVideoDurationSec || 36000),
+          chunkDurationSec: cfg.chunkDurationSec || env.VIDEO_CHUNK_DURATION_SEC,
+          setupInstructions: ytAdapter.getSetupInstructions(),
         },
         transcription: {
           primaryEngine: 'faster-whisper',
@@ -133,13 +145,6 @@ export const jobController = {
     if (String(project.userId) !== String(req.user!._id)) {
       throw new ForbiddenError('Cannot process another user’s project');
     }
-    if (!project.videoId) {
-      throw new BadRequestError('Project does not have a validated source video yet');
-    }
-
-    const video = await Video.findById(project.videoId);
-    if (!video) throw new NotFoundError('Source video record not found');
-
     const activeExisting = await ProcessingJob.findOne({
       projectId: project._id,
       status: { $in: ['queued', 'processing'] },
@@ -148,11 +153,19 @@ export const jobController = {
       throw new BadRequestError('A processing job is already active for this project');
     }
 
-    const cost = await calculateJobCreditCost(video.durationSec, project.settings.clipCount);
+    let video = project.videoId ? await Video.findById(project.videoId) : null;
+    if (!video && project.sourcePlatform !== 'youtube' && !project.youtubeMetadata?.videoId) {
+      throw new BadRequestError('Project does not have a validated source video yet');
+    }
+
+    const estDuration = video
+      ? video.durationSec
+      : project.youtubeMetadata?.durationSec || 60;
+    const cost = await calculateJobCreditCost(estDuration, project.settings.clipCount);
     const job = await ProcessingJob.create({
       userId: req.user!._id,
       projectId: project._id,
-      videoId: video._id,
+      videoId: video?._id,
       type: 'full_pipeline',
       queueMode: getActiveQueueMode(),
       stage: 'importing',
@@ -160,6 +173,17 @@ export const jobController = {
       progressPercent: 2,
       currentMessage: 'Queued for background pipeline...',
       creditsReserved: cost,
+      youtubeImport:
+        !video && project.youtubeMetadata
+          ? {
+              videoId: project.youtubeMetadata.videoId,
+              canonicalUrl: project.youtubeMetadata.canonicalUrl,
+              title: project.youtubeMetadata.title,
+              channelName: project.youtubeMetadata.channelName,
+              thumbnailUrl: project.youtubeMetadata.thumbnailUrl,
+              expectedDurationSec: project.youtubeMetadata.durationSec ?? undefined,
+            }
+          : undefined,
       idempotencyKey: `job:manual:${String(project._id)}:${Date.now()}`,
     });
 
@@ -225,18 +249,29 @@ export const jobController = {
 
     const project = await Project.findById(oldJob.projectId);
     const video = oldJob.videoId ? await Video.findById(oldJob.videoId) : null;
-    if (!project || !video) {
+    if (!project || (!video && !oldJob.youtubeImport)) {
       throw new NotFoundError('Associated project or source video missing');
     }
 
-    const cost = await calculateJobCreditCost(video.durationSec, project.settings.clipCount);
+    const estDurationSec =
+      video?.durationSec ||
+      Number((oldJob.youtubeImport?.metadata as any)?.durationSec || 600);
+    const cost = await calculateJobCreditCost(estDurationSec, project.settings.clipCount);
     const newJob = await ProcessingJob.create({
       userId: req.user!._id,
       projectId: project._id,
-      videoId: video._id,
+      videoId: video?._id,
       type: oldJob.type,
       targetClipId: oldJob.targetClipId,
       overrides: oldJob.overrides,
+      youtubeImport: oldJob.youtubeImport,
+      chunkProgress: oldJob.chunkProgress
+        ? {
+            ...oldJob.chunkProgress,
+            completedChunks: 0,
+            currentChunkIndex: 0,
+          }
+        : undefined,
       queueMode: getActiveQueueMode(),
       stage: 'importing',
       status: 'queued',

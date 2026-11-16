@@ -23,6 +23,12 @@ export async function getOrCreateSystemConfig(): Promise<ISystemConfig> {
   let cfg = await SystemConfig.findOne({ singletonKey: 'global' });
   if (!cfg) {
     cfg = await SystemConfig.create({ singletonKey: 'global' });
+  } else if (cfg.maxVideoDurationSec === 3600 && !cfg.chunkDurationSec) {
+    // Upgrade legacy 1-hour default config to 10-hour chunked processing defaults
+    cfg.maxVideoDurationSec = 36000;
+    cfg.chunkDurationSec = 600;
+    cfg.chunkOverlapSec = 5;
+    await cfg.save();
   }
   return cfg;
 }
