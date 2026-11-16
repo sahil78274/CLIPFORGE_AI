@@ -20,6 +20,9 @@ async function bootstrap() {
     });
   });
 
+  // Node's default five-minute total request timeout is too short for large uploads.
+  server.requestTimeout = 0;
+
   const shutdown = async (signal: string) => {
     logger.info(`Received ${signal}; shutting down gracefully...`);
     server.close(async () => {

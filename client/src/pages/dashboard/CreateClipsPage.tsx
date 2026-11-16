@@ -1,3 +1,4 @@
+import { MAX_VIDEO_UPLOAD_SIZE_MB } from '@clipforge/shared';
 import React, { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -274,7 +275,7 @@ export const CreateClipsPage: React.FC = () => {
     }
   }, [liveProjectQuery.data?.clips, selectedPreviewClip]);
 
-  const maxUploadMb = capsQuery.data?.limits.maxUploadSizeMb ?? 250;
+  const maxUploadMb = capsQuery.data?.limits.maxUploadSizeMb ?? MAX_VIDEO_UPLOAD_SIZE_MB;
   const maxDurationSec = capsQuery.data?.limits.maxVideoDurationSec ?? 36000;
   const creditsPerMin = capsQuery.data?.limits.creditsPerMinuteProcessed ?? 10;
   const minCredits = capsQuery.data?.limits.minCreditsPerJob ?? 10;

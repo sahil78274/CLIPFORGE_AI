@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import { Router } from 'express';
 import multer from 'multer';
+import { MAX_VIDEO_UPLOAD_SIZE_MB } from '@clipforge/shared';
 import { env } from '../config/env';
 import { optionalAuth, requireAdmin, requireAuth } from '../middleware/auth';
 import {
@@ -77,7 +78,7 @@ const videoUploadMulter = multer({
     },
   }),
   limits: {
-    fileSize: 500 * 1024 * 1024, // Hard ceiling 500MB; dynamic SystemConfig limit enforced inside controller
+    fileSize: MAX_VIDEO_UPLOAD_SIZE_MB * 1024 * 1024 + 1, // Busboy rejects at the limit; controller enforces the inclusive maximum
   },
   fileFilter: (_req, file, cb) => {
     const ext = path.extname(file.originalname || '').toLowerCase();

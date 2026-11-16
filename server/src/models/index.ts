@@ -1,4 +1,5 @@
 import bcrypt from 'bcryptjs';
+import { MAX_VIDEO_UPLOAD_SIZE_MB } from '@clipforge/shared';
 import { env } from '../config/env';
 import { logger } from '../utils/logger';
 import { User } from './User';
@@ -31,7 +32,16 @@ export async function getOrCreateSystemConfig(): Promise<ISystemConfig> {
   let cfg = await SystemConfig.findOne({ singletonKey: 'global' });
   if (!cfg) {
     cfg = await SystemConfig.create({ singletonKey: 'global' });
-  } else if (cfg.maxVideoDurationSec === 3600 && !cfg.chunkDurationSec) {
+  }
+  if (!cfg.uploadLimitMigrated) {
+    // Only upgrade the previous default, preserving custom administrator limits.
+    await SystemConfig.updateOne(
+      { _id: cfg._id, uploadLimitMigrated: { $ne: true } },
+      { $set: { uploadLimitMigrated: true, ...(cfg.maxUploadSizeMb === 250 ? { maxUploadSizeMb: MAX_VIDEO_UPLOAD_SIZE_MB } : {}) } }
+    );
+    cfg = (await SystemConfig.findOne({ singletonKey: 'global' }))!;
+  }
+  if (cfg.maxVideoDurationSec === 3600 && !cfg.chunkDurationSec) {
     // Upgrade legacy 1-hour default config to 10-hour chunked processing defaults
     cfg.maxVideoDurationSec = 36000;
     cfg.chunkDurationSec = 600;

@@ -1,4 +1,5 @@
 import mongoose, { Document, Schema } from 'mongoose';
+import { MAX_VIDEO_UPLOAD_SIZE_MB } from '@clipforge/shared';
 
 export interface ICreditPackage extends Document {
   name: string;
@@ -39,6 +40,7 @@ export interface ISystemConfig extends Document {
   creditsPerMinuteProcessed: number;
   minCreditsPerJob: number;
   maxUploadSizeMb: number;
+  uploadLimitMigrated: boolean;
   maxVideoDurationSec: number;
   chunkDurationSec: number;
   chunkOverlapSec: number;
@@ -56,7 +58,8 @@ const systemConfigSchema = new Schema<ISystemConfig>(
     welcomeCredits: { type: Number, default: 60 },
     creditsPerMinuteProcessed: { type: Number, default: 10 },
     minCreditsPerJob: { type: Number, default: 10 },
-    maxUploadSizeMb: { type: Number, default: 250 },
+    maxUploadSizeMb: { type: Number, default: MAX_VIDEO_UPLOAD_SIZE_MB },
+    uploadLimitMigrated: { type: Boolean, default: false },
     maxVideoDurationSec: { type: Number, default: 36000 },
     chunkDurationSec: { type: Number, default: 600 },
     chunkOverlapSec: { type: Number, default: 5 },

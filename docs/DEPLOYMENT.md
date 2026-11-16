@@ -4,13 +4,22 @@
 
 In production, run four isolated services (via Docker Compose, Kubernetes, or managed cloud services):
 
-1. **Reverse Proxy / CDN (`Nginx` / `Cloudflare`)**: Terminates TLS (`HTTPS`), enforces `client_max_body_size 550M` for video uploads, serves compiled `client/dist` static assets, and proxies `/api/v1/*` to the API container.
+1. **Reverse Proxy / CDN (`Nginx` / `Cloudflare`)**: Terminates TLS (`HTTPS`), allows video uploads with `client_max_body_size 10241M` (10 GiB plus multipart overhead), serves compiled `client/dist` static assets, and proxies `/api/v1/*` to the API container.
 2. **ClipForge API (`server/dist/index.js`)**: Stateless Express API instances connected to MongoDB Atlas and Redis.
 3. **Dedicated Media Worker (`node server/dist/workers/runWorker.js`)**: Horizontally scalable worker containers equipped with Python 3.11, Faster-Whisper model cache, OpenCV, and FFmpeg.
 4. **Managed State & Object Storage**:
    - **MongoDB Atlas** (`MONGODB_URI`, replica set enabled).
    - **Managed Redis** (`REDIS_URL` for BullMQ job distribution).
    - **AWS S3 or Cloudflare R2** (`STORAGE_PROVIDER=s3` so API and Worker nodes share media without shared local disks).
+
+For an Nginx reverse proxy in front of the API, configure the upload route with
+`client_max_body_size 10241M`, `client_body_timeout 1h`,
+`proxy_send_timeout 1h`, `proxy_read_timeout 1h`, and
+`proxy_request_buffering off`. Adjust timeouts for the slowest expected connection.
+Provision enough temporary disk for concurrent uploads and, for local storage, a
+second copy of each file. CDN request-size and timeout limits must also permit
+10 GiB; many CDN plans cannot proxy uploads this large, so bypass the CDN for
+this endpoint if necessary. No reverse proxy is configured in this repository.
 
 ---
 
