@@ -1,3 +1,5 @@
+export const MAX_VIDEO_UPLOAD_SIZE_MB = 10 * 1024;
+
 export const PIPELINE_STAGES = [
   'importing',
   'validating',

@@ -4,10 +4,10 @@ import crypto from 'crypto';
 import { pipeline } from 'stream/promises';
 import {
   S3Client,
-  PutObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
 } from '@aws-sdk/client-s3';
+import { Upload } from '@aws-sdk/lib-storage';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { env } from '../config/env';
 import { ForbiddenError, NotConfiguredError, NotFoundError } from '../utils/errors';
@@ -102,14 +102,12 @@ class S3StorageAdapter implements StorageAdapter {
 
   async saveFromLocalFile(localFilePath: string, key: string, contentType: string): Promise<void> {
     const stream = fs.createReadStream(localFilePath);
-    await this.client.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: stream,
-        ContentType: contentType,
-      })
-    );
+    await new Upload({
+      client: this.client,
+      params: { Bucket: this.bucket, Key: key, Body: stream, ContentType: contentType },
+      partSize: 16 * 1024 * 1024,
+      queueSize: 4,
+    }).done();
   }
 
   async resolveLocalPathForProcessing(key: string, destTempDir: string): Promise<string> {
