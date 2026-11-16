@@ -6,6 +6,7 @@ import type {
   DashboardOverviewData,
   GoogleDriveVideoFile,
   GoogleOAuthStatus,
+  GooglePickerSession,
   NotificationItem,
   PaymentRecord,
   ProcessingJobItem,
@@ -219,6 +220,55 @@ export const api = {
         xhr.send(formData);
       });
     },
+  },
+
+  googleDrive: {
+    oauthStatus: () => request<GoogleOAuthStatus>('/google-drive/oauth/status'),
+    oauthAuthorize: (body?: { redirectPath?: string; loginHint?: string }) =>
+      request<{ authorizationUrl: string; state: string; scopes: string[] }>(
+        '/google-drive/oauth/authorize',
+        {
+          method: 'POST',
+          body: JSON.stringify(body || {}),
+        }
+      ),
+    oauthDisconnect: () =>
+      request<GoogleOAuthStatus>('/google-drive/oauth/disconnect', {
+        method: 'POST',
+      }),
+    createPickerSession: () =>
+      request<GooglePickerSession>('/google-drive/picker-session', {
+        method: 'POST',
+      }),
+    selectFile: (body: { fileId: string; clipCount?: number }) =>
+      request<{
+        file: GoogleDriveVideoFile;
+        estimatedCredits: number;
+        chunkPlan: {
+          enabled: boolean;
+          chunkDurationSec: number;
+          chunkOverlapSec: number;
+          estimatedChunks: number;
+          maxSupportedDurationSec: number;
+        };
+      }>('/google-drive/select-file', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    importVideo: (body: {
+      fileId: string;
+      title?: string;
+      settings: ProjectProcessingSettings;
+      autoStart?: boolean;
+    }) =>
+      request<{
+        project: ProjectItem;
+        job?: ProcessingJobItem;
+        file: GoogleDriveVideoFile;
+      }>('/google-drive/import', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
   },
 
   youtube: {

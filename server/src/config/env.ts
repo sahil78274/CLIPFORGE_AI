@@ -116,7 +116,9 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
   GOOGLE_REDIRECT_URI: z
     .string()
-    .default('http://localhost:4000/api/v1/youtube/oauth/google/callback'),
+    .default('http://localhost:4000/api/v1/google-drive/oauth/callback'),
+  GOOGLE_API_KEY: z.string().optional().default(''),
+  GOOGLE_PROJECT_NUMBER: z.string().optional().default(''),
   GOOGLE_OAUTH_AUTH_URL: z.string().default('https://accounts.google.com/o/oauth2/v2/auth'),
   GOOGLE_OAUTH_TOKEN_URL: z.string().default('https://oauth2.googleapis.com/token'),
   GOOGLE_OAUTH_USERINFO_URL: z.string().default('https://www.googleapis.com/oauth2/v2/userinfo'),

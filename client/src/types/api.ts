@@ -8,6 +8,7 @@ export type {
   GoogleConnectedChannel,
   GoogleDriveVideoFile,
   GoogleOAuthStatus,
+  GooglePickerSession,
   PipelineStage,
   ProjectProcessingSettings,
   YouTubeVideoMetadata,
@@ -19,6 +20,7 @@ import type {
   ChunkProgressInfo,
   GoogleDriveVideoFile,
   GoogleOAuthStatus,
+  GooglePickerSession,
   PipelineStage,
   ProjectProcessingSettings,
   YouTubeVideoMetadata,
@@ -223,6 +225,14 @@ export interface ProcessingJobItem {
     warnings: string[];
   };
   chunkProgress?: ChunkProgressInfo;
+  googleDriveImport?: {
+    fileId: string;
+    name: string;
+    mimeType: string;
+    sizeBytes?: number | null;
+    durationSec?: number | null;
+    thumbnailUrl?: string;
+  };
   youtubeImport?: {
     videoId: string;
     canonicalUrl: string;
@@ -244,9 +254,24 @@ export interface ProjectItem {
   _id: string;
   title: string;
   description?: string;
-  sourceType: 'upload' | 'url';
+  sourceType: 'upload' | 'url' | 'google_drive';
   sourceUrl?: string;
-  sourcePlatform: 'upload' | 'youtube' | 'instagram' | 'facebook' | 'tiktok' | 'direct_mp4';
+  sourcePlatform:
+    | 'upload'
+    | 'google_drive'
+    | 'youtube'
+    | 'instagram'
+    | 'facebook'
+    | 'tiktok'
+    | 'direct_mp4';
+  googleDriveMetadata?: {
+    fileId: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number | null;
+    durationSec: number | null;
+    thumbnailUrl?: string;
+  };
   youtubeVideoId?: string;
   youtubeMetadata?: {
     videoId: string;

@@ -4,7 +4,12 @@ import { Router } from 'express';
 import multer from 'multer';
 import { env } from '../config/env';
 import { optionalAuth, requireAdmin, requireAuth } from '../middleware/auth';
-import { authRateLimiter, uploadAndJobLimiter } from '../middleware/rateLimit';
+import {
+  authRateLimiter,
+  googleDriveApiRateLimiter,
+  googleOAuthRateLimiter,
+  uploadAndJobLimiter,
+} from '../middleware/rateLimit';
 import { validateBody } from '../middleware/validate';
 import { asyncHandler, BadRequestError } from '../utils/errors';
 import {
@@ -16,6 +21,8 @@ import {
   createPaymentOrderSchema,
   createProjectSchema,
   forgotPasswordSchema,
+  googleDriveImportSchema,
+  googleDriveSelectFileSchema,
   googleOAuthAuthorizeSchema,
   importUrlSchema,
   loginSchema,
@@ -31,6 +38,7 @@ import {
 import { authController } from '../controllers/authController';
 import { userController } from '../controllers/userController';
 import { projectController, videoController } from '../controllers/projectAndVideoController';
+import { googleDriveController } from '../controllers/googleDriveController';
 import { youtubeController } from '../controllers/youtubeController';
 import { clipController } from '../controllers/clipController';
 import {
@@ -174,6 +182,53 @@ videosRouter.post(
   asyncHandler(videoController.importFromUrl)
 );
 apiV1Router.use('/videos', videosRouter);
+
+/* --- /api/v1/google-drive --- */
+const googleDriveRouter = Router();
+googleDriveRouter.get(
+  '/oauth/status',
+  requireAuth,
+  asyncHandler(googleDriveController.oauthStatus)
+);
+googleDriveRouter.post(
+  '/oauth/authorize',
+  requireAuth,
+  googleOAuthRateLimiter,
+  validateBody(googleOAuthAuthorizeSchema),
+  asyncHandler(googleDriveController.oauthAuthorize)
+);
+googleDriveRouter.get(
+  '/oauth/callback',
+  googleOAuthRateLimiter,
+  asyncHandler(googleDriveController.oauthCallback)
+);
+googleDriveRouter.post(
+  '/oauth/disconnect',
+  requireAuth,
+  googleOAuthRateLimiter,
+  asyncHandler(googleDriveController.oauthDisconnect)
+);
+googleDriveRouter.post(
+  '/picker-session',
+  requireAuth,
+  googleDriveApiRateLimiter,
+  asyncHandler(googleDriveController.createPickerSession)
+);
+googleDriveRouter.post(
+  '/select-file',
+  requireAuth,
+  googleDriveApiRateLimiter,
+  validateBody(googleDriveSelectFileSchema),
+  asyncHandler(googleDriveController.selectFile)
+);
+googleDriveRouter.post(
+  '/import',
+  requireAuth,
+  uploadAndJobLimiter,
+  validateBody(googleDriveImportSchema),
+  asyncHandler(googleDriveController.importVideo)
+);
+apiV1Router.use('/google-drive', googleDriveRouter);
 
 /* --- /api/v1/youtube --- */
 const youtubeRouter = Router();

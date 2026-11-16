@@ -8,9 +8,24 @@ export interface IProject extends Document {
   userId: Types.ObjectId;
   title: string;
   description?: string;
-  sourceType: 'upload' | 'url';
+  sourceType: 'upload' | 'url' | 'google_drive';
   sourceUrl?: string;
-  sourcePlatform: 'upload' | 'youtube' | 'instagram' | 'facebook' | 'tiktok' | 'direct_mp4';
+  sourcePlatform:
+    | 'upload'
+    | 'google_drive'
+    | 'youtube'
+    | 'instagram'
+    | 'facebook'
+    | 'tiktok'
+    | 'direct_mp4';
+  googleDriveMetadata?: {
+    fileId: string;
+    name: string;
+    mimeType: string;
+    sizeBytes: number | null;
+    durationSec: number | null;
+    thumbnailUrl?: string;
+  };
   youtubeVideoId?: string;
   youtubeMetadata?: {
     videoId: string;
@@ -43,13 +58,26 @@ const projectSchema = new Schema<IProject>(
     userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     title: { type: String, required: true, trim: true, maxlength: 180 },
     description: { type: String, trim: true, maxlength: 1000 },
-    sourceType: { type: String, enum: ['upload', 'url'], default: 'upload' },
+    sourceType: {
+      type: String,
+      enum: ['upload', 'url', 'google_drive'],
+      default: 'upload',
+    },
     sourceUrl: { type: String, trim: true },
     sourcePlatform: {
       type: String,
-      enum: ['upload', 'youtube', 'instagram', 'facebook', 'tiktok', 'direct_mp4'],
+      enum: [
+        'upload',
+        'google_drive',
+        'youtube',
+        'instagram',
+        'facebook',
+        'tiktok',
+        'direct_mp4',
+      ],
       default: 'upload',
     },
+    googleDriveMetadata: { type: Schema.Types.Mixed },
     youtubeVideoId: { type: String, trim: true, index: true },
     youtubeMetadata: { type: Schema.Types.Mixed },
     status: {

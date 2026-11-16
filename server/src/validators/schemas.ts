@@ -135,6 +135,24 @@ export const googleOAuthAuthorizeSchema = z.object({
   loginHint: z.string().trim().email().max(180).optional(),
 });
 
+export const googleDriveSelectFileSchema = z.object({
+  fileId: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{3,128}$/, 'Invalid Google Drive file ID'),
+  clipCount: z.number().int().min(1).max(20).optional(),
+});
+
+export const googleDriveImportSchema = z.object({
+  fileId: z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{3,128}$/, 'Invalid Google Drive file ID'),
+  title: z.string().trim().max(180).optional(),
+  settings: processingSettingsSchema.optional(),
+  autoStart: z.boolean().optional().default(true),
+});
+
 export const renameClipSchema = z.object({
   title: z.string().trim().min(1).max(180),
 });
