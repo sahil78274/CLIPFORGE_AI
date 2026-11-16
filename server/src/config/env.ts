@@ -110,7 +110,19 @@ const envSchema = z.object({
   OPENAI_MODEL: z.string().default('gpt-4o-mini'),
 
   YOUTUBE_DATA_API_KEY: z.string().optional().default(''),
+  YOUTUBE_API_BASE_URL: z.string().default('https://www.googleapis.com/youtube/v3'),
   YOUTUBE_OEMBED_ENDPOINT: z.string().default('https://www.youtube.com/oembed'),
+  GOOGLE_CLIENT_ID: z.string().optional().default(''),
+  GOOGLE_CLIENT_SECRET: z.string().optional().default(''),
+  GOOGLE_REDIRECT_URI: z
+    .string()
+    .default('http://localhost:4000/api/v1/youtube/oauth/google/callback'),
+  GOOGLE_OAUTH_AUTH_URL: z.string().default('https://accounts.google.com/o/oauth2/v2/auth'),
+  GOOGLE_OAUTH_TOKEN_URL: z.string().default('https://oauth2.googleapis.com/token'),
+  GOOGLE_OAUTH_USERINFO_URL: z.string().default('https://www.googleapis.com/oauth2/v2/userinfo'),
+  GOOGLE_OAUTH_REVOKE_URL: z.string().default('https://oauth2.googleapis.com/revoke'),
+  GOOGLE_DRIVE_API_BASE_URL: z.string().default('https://www.googleapis.com/drive/v3'),
+  GOOGLE_TOKEN_ENCRYPTION_KEY: z.string().optional().default(''),
   YOUTUBE_MEDIA_ADAPTER: z
     .enum(['composite', 'owner_export_dir', 'authorized_http_provider', 'custom_command'])
     .default('composite'),

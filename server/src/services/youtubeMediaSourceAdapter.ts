@@ -734,6 +734,10 @@ export function setCustomYouTubeMediaAdapterForTesting(
   customTestingAdapter = adapter;
 }
 
+export function getCustomYouTubeMediaAdapterForTesting(): YouTubeMediaSourceAdapter | null {
+  return customTestingAdapter;
+}
+
 export function getYouTubeMediaSourceAdapter(): YouTubeMediaSourceAdapter {
   if (customTestingAdapter) return customTestingAdapter;
 

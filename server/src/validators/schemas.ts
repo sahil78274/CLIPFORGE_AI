@@ -101,17 +101,38 @@ export const importUrlSchema = z.object({
   autoStart: z.boolean().optional().default(true),
 });
 
+const optionalUrlField = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z.string().trim().url('Please enter a valid HTTP or HTTPS media URL').max(2048).optional()
+);
+
+const optionalDriveFileIdField = z.preprocess(
+  (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+  z
+    .string()
+    .trim()
+    .regex(/^[A-Za-z0-9_-]{3,128}$/, 'Invalid Google Drive file ID')
+    .optional()
+);
+
 export const youtubeFetchSchema = z.object({
   url: z.string().trim().min(5, 'Please enter a YouTube video URL').max(2048),
-  authorizedMediaUrl: z.string().trim().url().max(2048).optional(),
+  authorizedMediaUrl: optionalUrlField,
+  googleDriveFileId: optionalDriveFileIdField,
 });
 
 export const youtubeGenerateClipsSchema = z.object({
   url: z.string().trim().min(5, 'Please enter a YouTube video URL').max(2048),
   title: z.string().trim().max(180).optional(),
-  authorizedMediaUrl: z.string().trim().url().max(2048).optional(),
+  authorizedMediaUrl: optionalUrlField,
+  googleDriveFileId: optionalDriveFileIdField,
   settings: processingSettingsSchema.optional(),
   autoStart: z.boolean().optional().default(true),
+});
+
+export const googleOAuthAuthorizeSchema = z.object({
+  redirectPath: z.string().trim().max(512).optional(),
+  loginHint: z.string().trim().email().max(180).optional(),
 });
 
 export const renameClipSchema = z.object({

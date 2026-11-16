@@ -47,7 +47,12 @@ import {
 import { api } from '../../services/api';
 import { useAuthStore } from '../../stores/authStore';
 import { useToastStore } from '../../stores/toastStore';
-import type { ClipItem, UrlCheckResult, YouTubeFetchResponse } from '../../types/api';
+import type {
+  ClipItem,
+  GoogleDriveVideoFile,
+  UrlCheckResult,
+  YouTubeFetchResponse,
+} from '../../types/api';
 import { formatBytes, formatDuration } from '../../utils/format';
 import { cn } from '../../utils/cn';
 import { useWalletRefresh } from '../../hooks/useWalletRefresh';
@@ -90,12 +95,18 @@ export const CreateClipsPage: React.FC = () => {
   const [urlCheck, setUrlCheck] = useState<UrlCheckResult | null>(null);
   const [importingUrl, setImportingUrl] = useState(false);
 
-  // Dedicated YouTube Link-to-Clips state
+  // Dedicated YouTube Link-to-Clips + Google OAuth + Drive + Direct Authorized URL state
   const [youtubeUrl, setYoutubeUrl] = useState(
     initialTab === 'youtube' ? initialUrl : ''
   );
   const [authorizedMediaUrl, setAuthorizedMediaUrl] = useState('');
   const [showAuthorizedOverride, setShowAuthorizedOverride] = useState(false);
+  const [selectedDriveFile, setSelectedDriveFile] = useState<GoogleDriveVideoFile | null>(null);
+  const [showDrivePicker, setShowDrivePicker] = useState(false);
+  const [driveSearchInput, setDriveSearchInput] = useState('');
+  const [driveSearchCommitted, setDriveSearchCommitted] = useState('');
+  const [connectingGoogle, setConnectingGoogle] = useState(false);
+  const [disconnectingGoogle, setDisconnectingGoogle] = useState(false);
   const [fetchingYouTube, setFetchingYouTube] = useState(false);
   const [ytFetchError, setYtFetchError] = useState<string | null>(null);
   const [ytReport, setYtReport] = useState<YouTubeFetchResponse | null>(null);
@@ -115,6 +126,57 @@ export const CreateClipsPage: React.FC = () => {
     queryKey: ['system-capabilities'],
     queryFn: () => api.jobs.capabilities(),
   });
+
+  const googleOAuthQuery = useQuery({
+    queryKey: ['google-oauth-status'],
+    queryFn: () => api.youtube.googleOAuthStatus(),
+    enabled: tab === 'youtube',
+  });
+
+  const googleDriveConnected = Boolean(
+    googleOAuthQuery.data?.connected && googleOAuthQuery.data?.hasDriveScope
+  );
+
+  const driveFilesQuery = useQuery({
+    queryKey: [
+      'google-drive-video-files',
+      driveSearchCommitted,
+      ytReport?.video.canonicalUrl || youtubeUrl.trim(),
+    ],
+    queryFn: () =>
+      api.youtube.listDriveFiles({
+        query: driveSearchCommitted || undefined,
+        youtubeUrl: youtubeUrl.trim() || undefined,
+        pageSize: 20,
+      }),
+    enabled: tab === 'youtube' && googleDriveConnected && showDrivePicker,
+  });
+
+  useEffect(() => {
+    const googleConnectedFlag = searchParams.get('googleConnected');
+    const googleErrorMsg = searchParams.get('googleError');
+    if (googleConnectedFlag === '1') {
+      pushToast({
+        type: 'success',
+        title: 'Google account connected',
+        description:
+          'YouTube channel verification and Google Drive video exports are now active.',
+      });
+      void googleOAuthQuery.refetch();
+      const next = new URLSearchParams(searchParams);
+      next.delete('googleConnected');
+      navigate(`/dashboard/create?${next.toString()}`, { replace: true });
+    } else if (googleErrorMsg) {
+      pushToast({
+        type: 'error',
+        title: 'Google connection failed',
+        description: googleErrorMsg,
+      });
+      const next = new URLSearchParams(searchParams);
+      next.delete('googleError');
+      navigate(`/dashboard/create?${next.toString()}`, { replace: true });
+    }
+  }, [searchParams, navigate, pushToast, googleOAuthQuery]);
 
   const liveJobQuery = useQuery({
     queryKey: ['inline-active-job', activeJobId],
@@ -215,20 +277,32 @@ export const CreateClipsPage: React.FC = () => {
     probeVideo.src = objectUrl;
   };
 
-  const handleFetchYouTube = async () => {
+  const runYouTubeFetch = async (overrideDriveFileId?: string | null) => {
     if (!youtubeUrl.trim()) {
       pushToast({ type: 'warning', title: 'Paste a YouTube video URL first' });
       return;
     }
     setFetchingYouTube(true);
     setYtFetchError(null);
-    setYtReport(null);
     try {
+      const effectiveDriveId =
+        overrideDriveFileId !== undefined
+          ? overrideDriveFileId || undefined
+          : selectedDriveFile?.id || undefined;
       const report = await api.youtube.fetchVideo({
         url: youtubeUrl.trim(),
+        googleDriveFileId: effectiveDriveId,
         authorizedMediaUrl: authorizedMediaUrl.trim() || undefined,
       });
       setYtReport(report);
+      if (report.mediaAccess.matchedDriveFile) {
+        setSelectedDriveFile(report.mediaAccess.matchedDriveFile);
+      } else if (
+        report.mediaAccess.requiresDriveFileSelection &&
+        googleDriveConnected
+      ) {
+        setShowDrivePicker(true);
+      }
       if (report.video.title) {
         setTitle(report.video.title);
       }
@@ -238,6 +312,7 @@ export const CreateClipsPage: React.FC = () => {
     } catch (err: any) {
       const msg = err?.message || 'Could not fetch YouTube video details.';
       setYtFetchError(msg);
+      setYtReport(null);
       pushToast({
         type: 'error',
         title: 'YouTube verification failed',
@@ -245,6 +320,71 @@ export const CreateClipsPage: React.FC = () => {
       });
     } finally {
       setFetchingYouTube(false);
+    }
+  };
+
+  const handleFetchYouTube = async () => {
+    await runYouTubeFetch();
+  };
+
+  const handleConnectGoogle = async () => {
+    setConnectingGoogle(true);
+    try {
+      const redirectQuery = youtubeUrl.trim()
+        ? `/dashboard/create?tab=youtube&url=${encodeURIComponent(youtubeUrl.trim())}`
+        : '/dashboard/create?tab=youtube';
+      const res = await api.youtube.googleOAuthAuthorize({
+        redirectPath: redirectQuery,
+      });
+      window.location.href = res.authorizationUrl;
+    } catch (err: any) {
+      pushToast({
+        type: 'error',
+        title: 'Google OAuth unavailable',
+        description:
+          err?.message ||
+          'Configure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET or provide a Direct Authorized Media URL.',
+      });
+      setConnectingGoogle(false);
+    }
+  };
+
+  const handleDisconnectGoogle = async () => {
+    setDisconnectingGoogle(true);
+    try {
+      await api.youtube.googleOAuthDisconnect();
+      setSelectedDriveFile(null);
+      setShowDrivePicker(false);
+      await googleOAuthQuery.refetch();
+      pushToast({
+        type: 'info',
+        title: 'Google account disconnected',
+      });
+    } catch (err: any) {
+      pushToast({
+        type: 'error',
+        title: 'Disconnect failed',
+        description: err?.message,
+      });
+    } finally {
+      setDisconnectingGoogle(false);
+    }
+  };
+
+  const handleSelectDriveFile = async (driveFile: GoogleDriveVideoFile) => {
+    setSelectedDriveFile(driveFile);
+    if (driveFile.durationSec) {
+      setDetectedDurationSec(driveFile.durationSec);
+    }
+    if (youtubeUrl.trim()) {
+      await runYouTubeFetch(driveFile.id);
+    }
+  };
+
+  const handleClearDriveFile = async () => {
+    setSelectedDriveFile(null);
+    if (youtubeUrl.trim()) {
+      await runYouTubeFetch(null);
     }
   };
 
@@ -256,6 +396,7 @@ export const CreateClipsPage: React.FC = () => {
       const res = await api.youtube.generateClips({
         url: youtubeUrl.trim(),
         title: title.trim() || ytReport?.video.title || undefined,
+        googleDriveFileId: selectedDriveFile?.id || undefined,
         authorizedMediaUrl: authorizedMediaUrl.trim() || undefined,
         settings,
         autoStart: true,
@@ -744,6 +885,206 @@ export const CreateClipsPage: React.FC = () => {
 
             {tab === 'youtube' ? (
               <div className="space-y-4">
+                {/* Google OAuth Channel Ownership & Google Drive Connection Card */}
+                <div className="rounded-xl border border-white/10 bg-[#0D0D14] p-3.5 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2.5">
+                    <div className="space-y-0.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-xs font-semibold text-white">
+                          Authorized Creator Access (YouTube + Google Drive)
+                        </span>
+                        {googleOAuthQuery.data?.connected ? (
+                          <Badge variant="success">
+                            Connected: {googleOAuthQuery.data.email}
+                          </Badge>
+                        ) : googleOAuthQuery.data?.oauthConfigured ? (
+                          <Badge variant="brand">Google OAuth Ready</Badge>
+                        ) : (
+                          <Badge variant="warning">Direct URL / Upload Mode</Badge>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-zinc-400">
+                        {googleOAuthQuery.data?.connected
+                          ? `Verify YouTube channel ownership${
+                              googleOAuthQuery.data.channels?.length
+                                ? ` (${googleOAuthQuery.data.channels
+                                    .map((c) => c.title)
+                                    .join(', ')})`
+                                : ''
+                            } and stream your original MP4/MOV/WebM exports directly from Google Drive.`
+                          : 'Connect Google to verify channel ownership & select original video exports from Google Drive, or paste a Direct Authorized Media URL below.'}
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      {googleOAuthQuery.data?.connected ? (
+                        <>
+                          {googleDriveConnected && (
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => setShowDrivePicker((v) => !v)}
+                              leftIcon={<FileVideo className="w-3.5 h-3.5" />}
+                            >
+                              {showDrivePicker ? 'Hide Drive Files' : 'Browse Google Drive'}
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            loading={disconnectingGoogle}
+                            onClick={handleDisconnectGoogle}
+                          >
+                            Disconnect
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={googleOAuthQuery.data?.oauthConfigured === false}
+                          loading={connectingGoogle}
+                          onClick={handleConnectGoogle}
+                        >
+                          Connect Google Account
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {selectedDriveFile && (
+                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/[0.08] px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex flex-wrap items-center gap-2 min-w-0">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                        <span className="font-medium text-white truncate">
+                          Drive Export: {selectedDriveFile.name}
+                        </span>
+                        {selectedDriveFile.durationSec !== null && (
+                          <span className="text-zinc-300 font-mono text-[11px]">
+                            ({formatDuration(selectedDriveFile.durationSec)})
+                          </span>
+                        )}
+                        {selectedDriveFile.match?.confidence === 'exact' && (
+                          <Badge variant="success">Exact Video ID Match</Badge>
+                        )}
+                        {selectedDriveFile.match?.confidence === 'high' && (
+                          <Badge variant="brand">High Match</Badge>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleClearDriveFile}
+                        className="text-zinc-400 hover:text-white inline-flex items-center gap-1 text-[11px]"
+                      >
+                        <X className="w-3.5 h-3.5" /> Clear
+                      </button>
+                    </div>
+                  )}
+
+                  {selectedDriveFile?.match?.warning && (
+                    <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-200 flex items-start gap-2">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>{selectedDriveFile.match.warning}</span>
+                    </div>
+                  )}
+
+                  {googleDriveConnected && showDrivePicker && (
+                    <div className="pt-2 border-t border-white/10 space-y-2.5">
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="flex-1">
+                          <Input
+                            value={driveSearchInput}
+                            onChange={(e) => setDriveSearchInput(e.target.value)}
+                            placeholder="Search video exports in Google Drive by title or YouTube ID..."
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          loading={driveFilesQuery.isFetching}
+                          onClick={() => {
+                            setDriveSearchCommitted(driveSearchInput.trim());
+                            void driveFilesQuery.refetch();
+                          }}
+                        >
+                          Search Drive
+                        </Button>
+                      </div>
+
+                      {driveFilesQuery.isLoading ? (
+                        <div className="text-xs text-zinc-400 py-3 text-center">
+                          Loading video exports from Google Drive...
+                        </div>
+                      ) : driveFilesQuery.isError ? (
+                        <div className="text-xs text-red-300 py-2">
+                          {(driveFilesQuery.error as any)?.message ||
+                            'Unable to list Google Drive video files.'}
+                        </div>
+                      ) : (driveFilesQuery.data?.files || []).length === 0 ? (
+                        <div className="text-xs text-zinc-400 py-3 text-center">
+                          No matching video files found in your Google Drive.
+                        </div>
+                      ) : (
+                        <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
+                          {(driveFilesQuery.data?.files || []).map((df) => {
+                            const isSelected = selectedDriveFile?.id === df.id;
+                            return (
+                              <div
+                                key={df.id}
+                                className={cn(
+                                  'rounded-lg border px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-xs transition-colors',
+                                  isSelected
+                                    ? 'border-[#7C5CFF] bg-[#7C5CFF]/15'
+                                    : 'border-white/10 bg-[#0A0A10] hover:border-white/25'
+                                )}
+                              >
+                                <div className="min-w-0 flex-1 space-y-0.5">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span className="font-medium text-white truncate">
+                                      {df.name}
+                                    </span>
+                                    {df.match?.confidence === 'exact' && (
+                                      <Badge variant="success">Exact ID Match</Badge>
+                                    )}
+                                    {df.match?.confidence === 'high' && (
+                                      <Badge variant="brand">Suggested Match</Badge>
+                                    )}
+                                  </div>
+                                  <div className="text-[11px] text-zinc-400 flex flex-wrap items-center gap-x-3 gap-y-0.5 font-mono">
+                                    {df.durationSec !== null && (
+                                      <span>{formatDuration(df.durationSec)}</span>
+                                    )}
+                                    {df.sizeBytes !== null && (
+                                      <span>{formatBytes(df.sizeBytes)}</span>
+                                    )}
+                                    {df.width && df.height && (
+                                      <span>
+                                        {df.width}×{df.height}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant={isSelected ? 'primary' : 'secondary'}
+                                  onClick={() => handleSelectDriveFile(df)}
+                                >
+                                  {isSelected ? 'Selected' : 'Select Export'}
+                                </Button>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <div className="space-y-2">
                   <label className="block text-xs font-medium text-zinc-300">
                     Paste YouTube Video URL
@@ -772,26 +1113,45 @@ export const CreateClipsPage: React.FC = () => {
                   </div>
                 </div>
 
-                <div>
+                <div className="space-y-1.5">
                   <button
                     type="button"
                     onClick={() => setShowAuthorizedOverride((v) => !v)}
                     className="text-[11px] text-zinc-400 hover:text-white underline"
                   >
                     {showAuthorizedOverride
-                      ? 'Hide owner-authorized media export URL'
-                      : '+ Have a signed owner-authorized media export URL? (Optional)'}
+                      ? 'Hide Direct Authorized Media URL'
+                      : '+ Provide a Direct Authorized Media URL (presigned S3 / GCS / R2 / CDN MP4, MOV, WebM)'}
                   </button>
                   {showAuthorizedOverride && (
-                    <div className="mt-2">
-                      <Input
-                        value={authorizedMediaUrl}
-                        onChange={(e) => {
-                          setAuthorizedMediaUrl(e.target.value);
-                          setYtReport(null);
-                        }}
-                        placeholder="https://storage.example.com/owner-exports/episode.mp4"
-                      />
+                    <div className="mt-2 space-y-1.5">
+                      <div className="flex flex-col sm:flex-row gap-2">
+                        <div className="flex-1">
+                          <Input
+                            value={authorizedMediaUrl}
+                            onChange={(e) => {
+                              setAuthorizedMediaUrl(e.target.value);
+                              setYtReport(null);
+                            }}
+                            placeholder="https://storage.example.com/owner-exports/episode.mp4?X-Amz-Signature=..."
+                          />
+                        </div>
+                        {youtubeUrl.trim() && authorizedMediaUrl.trim() && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            loading={fetchingYouTube}
+                            onClick={handleFetchYouTube}
+                          >
+                            Verify Stream
+                          </Button>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-zinc-500">
+                        Must point to an actual authorized video stream (MP4/MOV/WebM). YouTube
+                        watch webpage URLs and metadata responses are never accepted as video files.
+                      </p>
                     </div>
                   )}
                 </div>
@@ -825,12 +1185,15 @@ export const CreateClipsPage: React.FC = () => {
                       <div className="flex-1 min-w-0 space-y-2">
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge variant="brand">ID: {ytReport.video.videoId}</Badge>
+                          {ytReport.video.channelOwnershipVerified && (
+                            <Badge variant="success">Channel Owner Verified</Badge>
+                          )}
                           <Badge
                             variant={ytReport.mediaAccess.available ? 'success' : 'warning'}
                           >
                             {ytReport.mediaAccess.available
                               ? `Media Ready (${ytReport.mediaAccess.adapterName})`
-                              : 'Media Source Required'}
+                              : 'Authorized Media Required'}
                           </Badge>
                           {ytReport.chunkPlan.enabled && (
                             <Badge variant="brand">
@@ -861,6 +1224,12 @@ export const CreateClipsPage: React.FC = () => {
                           </span>
                         </div>
 
+                        {ytReport.mediaAccess.available && ytReport.mediaAccess.guidance && (
+                          <p className="text-[11px] text-emerald-300/90">
+                            {ytReport.mediaAccess.guidance}
+                          </p>
+                        )}
+
                         {ytReport.chunkPlan.enabled && (
                           <p className="text-[11px] text-emerald-300/90">
                             Long-video chunk processing enabled ({ytReport.chunkPlan.estimatedChunks}{' '}
@@ -872,13 +1241,13 @@ export const CreateClipsPage: React.FC = () => {
                     </div>
 
                     {!ytReport.mediaAccess.available && (
-                      <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 space-y-2">
+                      <div className="p-3.5 rounded-xl bg-amber-500/10 border border-amber-500/30 text-xs text-amber-200 space-y-2.5">
                         <div className="font-semibold flex items-center gap-1.5">
                           <AlertTriangle className="w-4 h-4 shrink-0" />
-                          Metadata verified — Authorized media stream required to render clips
+                          Metadata recognized — Authorized video stream required to generate clips
                         </div>
                         <p className="text-amber-100/85 leading-relaxed">
-                          {ytReport.mediaAccess.reason}
+                          {ytReport.mediaAccess.reason || ytReport.mediaAccess.guidance}
                         </p>
                         {ytReport.mediaAccess.setupInstructions && (
                           <p className="text-[11px] text-zinc-300 font-mono bg-black/30 p-2 rounded-lg">
@@ -886,13 +1255,42 @@ export const CreateClipsPage: React.FC = () => {
                           </p>
                         )}
                         <div className="flex flex-wrap gap-2 pt-1">
+                          {googleDriveConnected ? (
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => setShowDrivePicker(true)}
+                              leftIcon={<FileVideo className="w-3.5 h-3.5" />}
+                            >
+                              Select Export from Google Drive
+                            </Button>
+                          ) : (
+                            googleOAuthQuery.data?.oauthConfigured && (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                loading={connectingGoogle}
+                                onClick={handleConnectGoogle}
+                              >
+                                Connect Google Drive
+                              </Button>
+                            )
+                          )}
                           <Button
                             size="sm"
                             variant="secondary"
+                            onClick={() => setShowAuthorizedOverride(true)}
+                            leftIcon={<Globe className="w-3.5 h-3.5" />}
+                          >
+                            Paste Direct Authorized Media URL
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
                             onClick={() => setTab('upload')}
                             leftIcon={<Upload className="w-3.5 h-3.5" />}
                           >
-                            Upload Local Video File Instead
+                            Upload Local Video File
                           </Button>
                         </div>
                       </div>
@@ -1475,7 +1873,10 @@ export const CreateClipsPage: React.FC = () => {
                   !youtubeUrl.trim() ||
                   startingYouTubeJob ||
                   !hasEnoughCredits ||
-                  (ytReport !== null && !ytReport.mediaAccess.available)
+                  (ytReport !== null &&
+                    !ytReport.mediaAccess.available &&
+                    !selectedDriveFile &&
+                    !authorizedMediaUrl.trim())
                 }
                 loading={startingYouTubeJob}
                 onClick={handleYouTubeGenerateStart}

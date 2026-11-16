@@ -5,6 +5,7 @@ import { User } from './User';
 import { CreditWallet } from './CreditWallet';
 import { CreditTransaction } from './CreditTransaction';
 import { CreditPackage, SystemConfig, type ISystemConfig } from './SystemConfig';
+import { UserGoogleIntegration } from './UserGoogleIntegration';
 
 export * from './User';
 export * from './Project';
@@ -18,6 +19,7 @@ export * from './Notification';
 export * from './AdminAuditLog';
 export * from './PasswordResetToken';
 export * from './SystemConfig';
+export * from './UserGoogleIntegration';
 
 export async function getOrCreateSystemConfig(): Promise<ISystemConfig> {
   let cfg = await SystemConfig.findOne({ singletonKey: 'global' });
@@ -41,6 +43,7 @@ export async function ensureSystemBootstrap(): Promise<void> {
     CreditTransaction.init(),
     CreditPackage.init(),
     SystemConfig.init(),
+    UserGoogleIntegration.init(),
   ]);
 
   const cfg = await getOrCreateSystemConfig();

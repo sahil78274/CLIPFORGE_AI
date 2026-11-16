@@ -41,6 +41,8 @@ export interface IProcessingJob extends Document {
     videoId: string;
     canonicalUrl: string;
     authorizedMediaUrl?: string;
+    googleDriveFileId?: string;
+    googleDriveFileName?: string;
     metadata?: Record<string, unknown>;
   };
   attempts: number;

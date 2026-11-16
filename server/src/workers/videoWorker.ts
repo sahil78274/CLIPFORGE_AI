@@ -12,7 +12,7 @@ import {
   type IVideo,
 } from '../models';
 import { getStorageAdapter } from '../services/storageService';
-import { getYouTubeMediaSourceAdapter } from '../services/youtubeMediaSourceAdapter';
+import { getMediaAcquisitionService } from '../services/mediaAcquisition';
 import {
   calculateJobCreditCost,
   releaseReservedCredits,
@@ -171,14 +171,26 @@ export async function executeProcessingJob(
 
       let acquired;
       try {
-        const ytAdapter = getYouTubeMediaSourceAdapter();
-        acquired = await ytAdapter.acquireMedia(
+        const mediaAcquisition = getMediaAcquisitionService();
+        const ytMeta = yt.metadata as Record<string, any> | undefined;
+        acquired = await mediaAcquisition.acquireMedia(
           yt.videoId,
           yt.canonicalUrl,
           path.join(tempJobDir, 'yt_source'),
           {
+            userId: String(claimed.userId),
+            googleDriveFileId: yt.googleDriveFileId,
             authorizedMediaUrl: yt.authorizedMediaUrl,
-            maxDurationSec: Math.min(env.MAX_VIDEO_DURATION_SEC, cfg.maxVideoDurationSec || 36000),
+            targetVideo: {
+              videoId: yt.videoId,
+              title: String(ytMeta?.title || project.title || `YouTube Video ${yt.videoId}`),
+              durationSec:
+                typeof ytMeta?.durationSec === 'number' ? ytMeta.durationSec : null,
+            },
+            maxDurationSec: Math.min(
+              env.MAX_VIDEO_DURATION_SEC,
+              cfg.maxVideoDurationSec || 36000
+            ),
             signal: acquireController.signal,
             onProgress: (pct, msg) => {
               const mapped = Math.min(9, 4 + Math.floor(pct / 20));

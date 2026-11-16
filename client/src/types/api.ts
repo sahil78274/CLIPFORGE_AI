@@ -1,15 +1,24 @@
 export type {
   AspectRatio,
+  AuthorizedMediaSourceType,
   CaptionStyleConfig,
   ChunkProgressInfo,
+  DriveMatchConfidence,
+  DriveVideoMatchInfo,
+  GoogleConnectedChannel,
+  GoogleDriveVideoFile,
+  GoogleOAuthStatus,
   PipelineStage,
   ProjectProcessingSettings,
   YouTubeVideoMetadata,
 } from '@clipforge/shared';
 import type {
   AspectRatio,
+  AuthorizedMediaSourceType,
   CaptionStyleConfig,
   ChunkProgressInfo,
+  GoogleDriveVideoFile,
+  GoogleOAuthStatus,
   PipelineStage,
   ProjectProcessingSettings,
   YouTubeVideoMetadata,
@@ -350,10 +359,23 @@ export interface YouTubeFetchResponse {
     available: boolean;
     adapterName: string;
     configured: boolean;
+    sourceType?: AuthorizedMediaSourceType;
+    requiresAuthorizedMediaUrl?: boolean;
+    requiresDriveFileSelection?: boolean;
+    matchedDriveFile?: GoogleDriveVideoFile;
+    candidateDriveFiles?: GoogleDriveVideoFile[];
     reason?: string;
+    guidance?: string;
     setupInstructions?: string;
     probedDurationSec?: number | null;
+    resolutionOptions?: Array<{
+      id: string;
+      label: string;
+      description: string;
+      available: boolean;
+    }>;
   };
+  googleAuth?: GoogleOAuthStatus;
   chunkPlan: {
     enabled: boolean;
     chunkDurationSec: number;
