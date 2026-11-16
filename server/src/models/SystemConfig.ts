@@ -40,6 +40,8 @@ export interface ISystemConfig extends Document {
   minCreditsPerJob: number;
   maxUploadSizeMb: number;
   maxVideoDurationSec: number;
+  chunkDurationSec: number;
+  chunkOverlapSec: number;
   maxClipsPerJob: number;
   supportedPlatforms: Record<
     string,
@@ -55,8 +57,10 @@ const systemConfigSchema = new Schema<ISystemConfig>(
     creditsPerMinuteProcessed: { type: Number, default: 10 },
     minCreditsPerJob: { type: Number, default: 10 },
     maxUploadSizeMb: { type: Number, default: 250 },
-    maxVideoDurationSec: { type: Number, default: 3600 },
-    maxClipsPerJob: { type: Number, default: 6 },
+    maxVideoDurationSec: { type: Number, default: 36000 },
+    chunkDurationSec: { type: Number, default: 600 },
+    chunkOverlapSec: { type: Number, default: 5 },
+    maxClipsPerJob: { type: Number, default: 10 },
     supportedPlatforms: {
       type: Schema.Types.Mixed,
       default: () => ({
@@ -67,8 +71,8 @@ const systemConfigSchema = new Schema<ISystemConfig>(
         },
         youtube: {
           enabled: true,
-          directImportSupported: false,
-          note: 'Metadata verified via YouTube oEmbed/Data API. Direct stream downloading requires authorized owner exports; upload your MP4 directly.',
+          directImportSupported: true,
+          note: 'Metadata verified via YouTube Data API / oEmbed; video media acquired through configured authorized media-source adapter with up to 10-hour chunk processing.',
         },
         instagram: {
           enabled: true,

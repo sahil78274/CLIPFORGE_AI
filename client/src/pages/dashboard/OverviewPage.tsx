@@ -1,5 +1,5 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   Activity,
@@ -10,6 +10,7 @@ import {
   ListVideo,
   PlusCircle,
   Sparkles,
+  Youtube,
 } from 'lucide-react';
 import { PIPELINE_STAGE_LABELS } from '@clipforge/shared';
 import {
@@ -18,6 +19,7 @@ import {
   Card,
   EmptyState,
   ErrorState,
+  Input,
   ProgressBar,
   Skeleton,
 } from '../../components/ui';
@@ -27,6 +29,8 @@ import { formatDuration, formatRelativeTime } from '../../utils/format';
 
 export const OverviewPage: React.FC = () => {
   const { user } = useAuthStore();
+  const navigate = useNavigate();
+  const [quickYoutubeUrl, setQuickYoutubeUrl] = useState('');
 
   const overviewQuery = useQuery({
     queryKey: ['dashboard-overview'],
@@ -124,6 +128,43 @@ export const OverviewPage: React.FC = () => {
           <Button leftIcon={<PlusCircle className="w-4 h-4" />}>Create New Clips</Button>
         </Link>
       </div>
+
+      {/* Quick YouTube Link-to-Clips Launch Bar */}
+      <Card className="p-5 border-[#7C5CFF]/30 bg-gradient-to-r from-[#141422] to-[#101018]">
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            navigate(
+              `/dashboard/create?tab=youtube${
+                quickYoutubeUrl.trim()
+                  ? `&url=${encodeURIComponent(quickYoutubeUrl.trim())}`
+                  : ''
+              }`
+            );
+          }}
+          className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3"
+        >
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div className="w-9 h-9 rounded-xl bg-red-500/15 border border-red-500/30 flex items-center justify-center text-red-400">
+              <Youtube className="w-4 h-4" />
+            </div>
+            <div>
+              <div className="text-xs font-semibold text-white">YouTube Link to AI Clips</div>
+              <div className="text-[11px] text-zinc-400">Supports podcasts & talks up to 10h</div>
+            </div>
+          </div>
+          <div className="flex-1">
+            <Input
+              value={quickYoutubeUrl}
+              onChange={(e) => setQuickYoutubeUrl(e.target.value)}
+              placeholder="Paste any public YouTube video link (https://www.youtube.com/watch?v=...)"
+            />
+          </div>
+          <Button type="submit" leftIcon={<Sparkles className="w-4 h-4" />}>
+            Fetch & Clip
+          </Button>
+        </form>
+      </Card>
 
       {/* Stat Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

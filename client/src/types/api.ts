@@ -1,14 +1,18 @@
 export type {
   AspectRatio,
   CaptionStyleConfig,
+  ChunkProgressInfo,
   PipelineStage,
   ProjectProcessingSettings,
+  YouTubeVideoMetadata,
 } from '@clipforge/shared';
 import type {
   AspectRatio,
   CaptionStyleConfig,
+  ChunkProgressInfo,
   PipelineStage,
   ProjectProcessingSettings,
+  YouTubeVideoMetadata,
 } from '@clipforge/shared';
 
 export interface User {
@@ -209,6 +213,11 @@ export interface ProcessingJobItem {
     ffmpegAvailable: boolean;
     warnings: string[];
   };
+  chunkProgress?: ChunkProgressInfo;
+  youtubeImport?: {
+    videoId: string;
+    canonicalUrl: string;
+  };
   creditsReserved: number;
   creditsDeducted: number;
   creditReservationReleased: boolean;
@@ -229,6 +238,17 @@ export interface ProjectItem {
   sourceType: 'upload' | 'url';
   sourceUrl?: string;
   sourcePlatform: 'upload' | 'youtube' | 'instagram' | 'facebook' | 'tiktok' | 'direct_mp4';
+  youtubeVideoId?: string;
+  youtubeMetadata?: {
+    videoId: string;
+    canonicalUrl: string;
+    title: string;
+    channelName: string;
+    thumbnailUrl: string;
+    durationSec: number | null;
+    metadataSource: string;
+    mediaAdapterUsed?: string;
+  };
   status: 'draft' | 'importing' | 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
   settings: ProjectProcessingSettings;
   videoId?: VideoRecord | string;
@@ -303,16 +323,43 @@ export interface SystemCapabilities {
     mode: 'bullmq' | 'local_worker';
     redisConnected: boolean;
   };
+  youtube?: {
+    mediaAdapter: string;
+    mediaAdapterConfigured: boolean;
+    dataApiConfigured: boolean;
+    setupInstructions: string;
+  };
   limits: {
     welcomeCredits: number;
     creditsPerMinuteProcessed: number;
     minCreditsPerJob: number;
     maxUploadSizeMb: number;
     maxVideoDurationSec: number;
+    chunkDurationSec?: number;
     maxClipsPerJob: number;
   };
   supportedPlatforms: Record<
     string,
     { enabled: boolean; directImportSupported: boolean; note: string }
   >;
+}
+
+export interface YouTubeFetchResponse {
+  video: YouTubeVideoMetadata;
+  mediaAccess: {
+    available: boolean;
+    adapterName: string;
+    configured: boolean;
+    reason?: string;
+    setupInstructions?: string;
+    probedDurationSec?: number | null;
+  };
+  chunkPlan: {
+    enabled: boolean;
+    chunkDurationSec: number;
+    chunkOverlapSec: number;
+    estimatedChunks: number;
+    maxSupportedDurationSec: number;
+  };
+  estimatedCredits: number;
 }

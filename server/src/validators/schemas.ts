@@ -79,6 +79,7 @@ export const processingSettingsSchema = z
     watermarkText: z.string().max(60).default(''),
     introText: z.string().max(80).default(''),
     outroText: z.string().max(80).default(''),
+    chunkDurationSec: z.number().int().min(15).max(3600).optional(),
     captionStyle: captionStyleSchema,
   })
   .default(DEFAULT_PROCESSING_SETTINGS);
@@ -96,6 +97,19 @@ export const checkUrlSchema = z.object({
 export const importUrlSchema = z.object({
   title: z.string().trim().min(1).max(180),
   url: z.string().trim().url('Please enter a valid HTTP or HTTPS URL').max(2048),
+  settings: processingSettingsSchema.optional(),
+  autoStart: z.boolean().optional().default(true),
+});
+
+export const youtubeFetchSchema = z.object({
+  url: z.string().trim().min(5, 'Please enter a YouTube video URL').max(2048),
+  authorizedMediaUrl: z.string().trim().url().max(2048).optional(),
+});
+
+export const youtubeGenerateClipsSchema = z.object({
+  url: z.string().trim().min(5, 'Please enter a YouTube video URL').max(2048),
+  title: z.string().trim().max(180).optional(),
+  authorizedMediaUrl: z.string().trim().url().max(2048).optional(),
   settings: processingSettingsSchema.optional(),
   autoStart: z.boolean().optional().default(true),
 });

@@ -32,6 +32,10 @@ export const PIPELINE_STAGE_LABELS: Record<PipelineStage, string> = {
   cancelled: 'Cancelled',
 };
 
+export const MAX_SUPPORTED_VIDEO_DURATION_SEC = 36000; // 10 hours
+export const DEFAULT_CHUNK_DURATION_SEC = 600; // 10-minute chunks
+export const DEFAULT_CHUNK_OVERLAP_SEC = 5; // 5-second boundary overlap
+
 export const DURATION_PRESETS = [
   { id: '15-30', label: '15–30 seconds', minSec: 15, maxSec: 30 },
   { id: '30-45', label: '30–45 seconds', minSec: 30, maxSec: 45 },
@@ -85,7 +89,29 @@ export interface ProjectProcessingSettings {
   watermarkText: string;
   introText: string;
   outroText: string;
+  chunkDurationSec?: number;
   captionStyle: CaptionStyleConfig;
+}
+
+export interface YouTubeVideoMetadata {
+  videoId: string;
+  canonicalUrl: string;
+  title: string;
+  channelName: string;
+  thumbnailUrl: string;
+  durationSec: number | null;
+  privacyStatus: 'public' | 'unlisted' | 'private' | 'unavailable';
+  isLiveStream?: boolean;
+  metadataSource: 'youtube_data_api' | 'authorized_export_manifest' | 'youtube_oembed';
+}
+
+export interface ChunkProgressInfo {
+  enabled: boolean;
+  chunkDurationSec: number;
+  chunkOverlapSec: number;
+  totalChunks: number;
+  completedChunks: number;
+  currentChunkIndex: number;
 }
 
 export const DEFAULT_CAPTION_STYLE: CaptionStyleConfig = {
@@ -121,3 +147,20 @@ export const DEFAULT_PROCESSING_SETTINGS: ProjectProcessingSettings = {
   outroText: '',
   captionStyle: DEFAULT_CAPTION_STYLE,
 };
+
+export function estimateProcessingCredits(
+  durationSec: number,
+  clipCount: number,
+  limits: { creditsPerMinuteProcessed: number; minCreditsPerJob: number }
+): number {
+  const safeDur = Math.max(1, durationSec);
+  // Absorb sub-second AAC/MP4 packet-boundary padding (e.g. 3600.06s on an exact 1:00:00 video)
+  const adjustedSec = safeDur > 60 ? Math.max(1, safeDur - 1.5) : safeDur;
+  const minutes = Math.max(1, Math.ceil(adjustedSec / 60));
+  const rate = Math.max(1, limits.creditsPerMinuteProcessed);
+  // First 10 minutes billed per minute; long-form video beyond 10m billed per 10-minute chunk
+  const baseCredits =
+    minutes <= 10 ? minutes * rate : 10 * rate + Math.ceil((minutes - 10) / 10) * rate;
+  const extraClips = Math.max(0, clipCount - 3) * 2;
+  return Math.max(limits.minCreditsPerJob, baseCredits + extraClips);
+}

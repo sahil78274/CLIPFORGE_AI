@@ -13,6 +13,7 @@ import type {
   UrlCheckResult,
   User,
   WalletSummary,
+  YouTubeFetchResponse,
 } from '../types/api';
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || '/api/v1';
@@ -216,6 +217,38 @@ export const api = {
         xhr.send(formData);
       });
     },
+  },
+
+  youtube: {
+    adapterStatus: () =>
+      request<{
+        adapterName: string;
+        configured: boolean;
+        youtubeDataApiConfigured: boolean;
+        maxDurationSec: number;
+        defaultChunkDurationSec: number;
+        setupInstructions: string;
+      }>('/youtube/adapter-status'),
+    fetchVideo: (body: { url: string; authorizedMediaUrl?: string }) =>
+      request<YouTubeFetchResponse>('/youtube/fetch', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
+    generateClips: (body: {
+      url: string;
+      title?: string;
+      authorizedMediaUrl?: string;
+      settings: ProjectProcessingSettings;
+      autoStart?: boolean;
+    }) =>
+      request<{
+        project: ProjectItem;
+        job?: ProcessingJobItem;
+        youtube: YouTubeFetchResponse['video'];
+      }>('/youtube/generate', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }),
   },
 
   jobs: {

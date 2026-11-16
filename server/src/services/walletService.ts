@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { estimateProcessingCredits } from '@clipforge/shared';
 import {
   CreditTransaction,
   CreditWallet,
@@ -89,9 +90,10 @@ export async function calculateJobCreditCost(
   clipCount: number
 ): Promise<number> {
   const cfg = await getOrCreateSystemConfig();
-  const minutes = Math.max(1, Math.ceil(Math.max(1, durationSec) / 60));
-  const extraClips = Math.max(0, clipCount - 3) * 2;
-  return Math.max(cfg.minCreditsPerJob, minutes * cfg.creditsPerMinuteProcessed + extraClips);
+  return estimateProcessingCredits(durationSec, clipCount, {
+    creditsPerMinuteProcessed: cfg.creditsPerMinuteProcessed,
+    minCreditsPerJob: cfg.minCreditsPerJob,
+  });
 }
 
 export async function reserveCreditsForJob(params: {

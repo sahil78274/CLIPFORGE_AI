@@ -119,26 +119,43 @@ export async function cancelQueuedOrRunningJob(jobId: string): Promise<void> {
 }
 
 export async function recoverOrphanedJobsOnStartup(): Promise<void> {
-  // Crash recovery: re-enqueue 'queued' jobs; safely fail & release credits for interrupted 'processing' jobs
+  // Crash recovery: resume interrupted 'processing' jobs from saved chunk checkpoints
+  // when retry attempts remain; otherwise fail safely and release reserved credits.
   const interrupted = await ProcessingJob.find({ status: 'processing' });
   for (const job of interrupted) {
-    job.status = 'failed';
-    job.stage = 'failed';
-    job.error = {
-      code: 'WORKER_RESTART_INTERRUPTED',
-      message: 'Worker restarted while job was executing. Reserved credits released automatically.',
-      stage: job.stage,
-    };
-    if (!job.creditReservationReleased && job.creditsReserved > 0) {
-      await releaseReservedCredits({
-        userId: job.userId,
-        jobId: String(job._id),
-        reservedAmount: job.creditsReserved,
-        reason: 'Worker crash recovery release',
+    const attempts = job.attempts || 0;
+    const maxAttempts = job.maxAttempts || 3;
+    if (attempts < maxAttempts) {
+      job.status = 'queued';
+      job.currentMessage = `Server restarted — resuming processing from saved checkpoint (attempt ${
+        attempts + 1
+      }/${maxAttempts})...`;
+      job.stageHistory.push({
+        stage: job.stage,
+        startedAt: new Date(),
+        message: 'Recovered after server restart; re-queued to resume from chunk checkpoint.',
       });
-      job.creditReservationReleased = true;
+      await job.save();
+    } else {
+      job.status = 'failed';
+      job.stage = 'failed';
+      job.error = {
+        code: 'WORKER_RESTART_MAX_ATTEMPTS',
+        message:
+          'Worker restarted after maximum retry attempts. Reserved credits released automatically.',
+        stage: job.stage,
+      };
+      if (!job.creditReservationReleased && job.creditsReserved > 0) {
+        await releaseReservedCredits({
+          userId: job.userId,
+          jobId: String(job._id),
+          reservedAmount: job.creditsReserved,
+          reason: 'Worker crash recovery release after max attempts',
+        });
+        job.creditReservationReleased = true;
+      }
+      await job.save();
     }
-    await job.save();
   }
 
   const waiting = await ProcessingJob.find({ status: 'queued' }).sort({ createdAt: 1 });
