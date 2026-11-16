@@ -32,6 +32,79 @@ def _escape_ass_text(txt: str) -> str:
     )
 
 
+def extract_clip_caption_cues(
+    segments: List[Dict[str, Any]],
+    clip_start: float,
+    clip_end: float,
+    max_cues: int = 400,
+) -> List[Dict[str, Any]]:
+    """Return the word-timed caption cues burned into this clip, in clip-relative seconds.
+
+    This consumes the exact same segment/word data as ``generate_ass_subtitles`` so the
+    persisted captions always match the rendered video instead of being re-derived later.
+    Cues are grouped at most 4 words to mirror the ASS grouping.
+    """
+    clip_dur = max(0.5, clip_end - clip_start)
+    clip_words: List[Dict[str, Any]] = []
+    used_real_word_timings = False
+
+    for seg in segments:
+        if float(seg.get("end", 0)) <= clip_start or float(seg.get("start", 0)) >= clip_end:
+            continue
+        words = seg.get("words") or []
+        if words:
+            used_real_word_timings = True
+            for w in words:
+                if float(w["end"]) > clip_start and float(w["start"]) < clip_end:
+                    clip_words.append(
+                        {
+                            "word": _escape_ass_text(w["word"]),
+                            "start": max(0.0, float(w["start"]) - clip_start),
+                            "end": min(clip_dur, float(w["end"]) - clip_start),
+                        }
+                    )
+        else:
+            tokens = [_escape_ass_text(t) for t in str(seg.get("text", "")).split() if t.strip()]
+            if tokens:
+                s_rel = max(0.0, float(seg["start"]) - clip_start)
+                e_rel = min(clip_dur, float(seg["end"]) - clip_start)
+                step = max(0.15, (e_rel - s_rel) / len(tokens))
+                for k, tok in enumerate(tokens):
+                    clip_words.append(
+                        {
+                            "word": tok,
+                            "start": s_rel + k * step,
+                            "end": min(clip_dur, s_rel + (k + 1) * step),
+                        }
+                    )
+
+    cues: List[Dict[str, Any]] = []
+    chunk_size = 4
+    for idx in range(0, len(clip_words), chunk_size):
+        group = [w for w in clip_words[idx : idx + chunk_size] if w["word"]]
+        if not group:
+            continue
+        cues.append(
+            {
+                "startSec": round(max(0.0, group[0]["start"]), 2),
+                "endSec": round(max(group[0]["start"] + 0.2, group[-1]["end"]), 2),
+                "text": " ".join(w["word"] for w in group),
+                "words": [
+                    {
+                        "word": w["word"],
+                        "startSec": round(max(0.0, w["start"]), 2),
+                        "endSec": round(max(w["start"], w["end"]), 2),
+                    }
+                    for w in group
+                ],
+            }
+        )
+        if len(cues) >= max_cues:
+            break
+
+    return cues, used_real_word_timings
+
+
 def generate_ass_subtitles(
     ass_path: str,
     play_w: int,

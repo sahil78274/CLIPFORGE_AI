@@ -307,6 +307,11 @@ clipsRouter.post('/bulk-download-token', asyncHandler(clipController.createBulkD
 clipsRouter.get('/:id', asyncHandler(clipController.getById));
 clipsRouter.patch('/:id', validateBody(renameClipSchema), asyncHandler(clipController.rename));
 clipsRouter.patch('/:id/metadata', asyncHandler(clipController.updateMetadata));
+clipsRouter.patch('/:id/captions', asyncHandler(clipController.updateCaptions));
+// Metadata & caption exports (authenticated; JSON/TXT/SRT/one-clip ZIP)
+clipsRouter.get('/:id/metadata', asyncHandler(clipController.downloadMetadata));
+clipsRouter.get('/:id/captions.srt', asyncHandler(clipController.downloadCaptions));
+clipsRouter.get('/:id/package', asyncHandler(clipController.downloadPackage));
 clipsRouter.post('/:id/regenerate-metadata', asyncHandler(clipController.regenerateMetadata));
 clipsRouter.post(
   '/:id/regenerate',

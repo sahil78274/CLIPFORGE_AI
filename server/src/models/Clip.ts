@@ -3,6 +3,8 @@ import { DEFAULT_CAPTION_STYLE, type AspectRatio, type CaptionStyleConfig } from
 
 export interface IClipMetadata {
   titleOptions: string[];
+  /** Canonical SEO-friendly description for every generated clip. */
+  seoDescription: string;
   descriptions: {
     youtubeShorts: string;
     instagramReels: string;
@@ -20,6 +22,14 @@ export interface IClipMetadata {
     windowsByPlatform?: Record<string, string>;
   };
   generatedBy: 'gemini' | 'openai_compatible' | 'deterministic_nlp';
+}
+
+/** One word-timed caption cue derived from the transcription word timings. */
+export interface IClipCaptionCue {
+  startSec: number;
+  endSec: number;
+  text: string;
+  words?: Array<{ word: string; startSec: number; endSec: number }>;
 }
 
 export interface IClip extends Document {
@@ -44,6 +54,13 @@ export interface IClip extends Document {
   height: number;
   status: 'pending' | 'rendering' | 'ready' | 'failed';
   captionStyle: CaptionStyleConfig;
+  /**
+   * Word-level caption cues actually burned into the rendered MP4, in clip-relative
+   * seconds. Derived from the same transcription word timings the ASS generator uses,
+   * so the dashboard can display/edit them and exports can emit matching SRT files.
+   */
+  captions?: IClipCaptionCue[];
+  captionSource?: 'word_timestamps' | 'segment_interpolated' | 'edited';
   editingApplied: string[];
   metadata: IClipMetadata;
   createdAt: Date;
@@ -78,6 +95,11 @@ const clipSchema = new Schema<IClip>(
       index: true,
     },
     captionStyle: { type: Schema.Types.Mixed, default: () => ({ ...DEFAULT_CAPTION_STYLE }) },
+    captions: { type: Schema.Types.Mixed, default: [] },
+    captionSource: {
+      type: String,
+      enum: ['word_timestamps', 'segment_interpolated', 'edited'],
+    },
     editingApplied: { type: [String], default: [] },
     metadata: { type: Schema.Types.Mixed, required: true },
   },

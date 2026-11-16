@@ -22,6 +22,65 @@ const STOPWORDS = new Set([
   'also', 'been', 'being', 'over', 'such', 'make', 'made', 'here', 'know', 'every',
 ]);
 
+/** Normalizes LLM/user hashtag output: trims, dedupes, guarantees a leading `#`, drops junk. */
+export function sanitizeHashtags(raw: unknown, max = 12): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const body = item
+      .trim()
+      .replace(/^#+/, '')
+      // Keep letters, digits, underscore and combining marks (e.g. Devanagari matras).
+      .replace(/[^\p{L}\p{N}\p{M}_]/gu, '');
+    if (!body) continue;
+    const tag = `#${body}`;
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Normalizes keyword output: non-empty strings only, trimmed and deduped. */
+export function sanitizeKeywords(raw: unknown, max = 12): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const kw = item.trim();
+    if (!kw) continue;
+    const key = kw.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(kw);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Normalizes title options: non-empty strings, trimmed, at most 3. */
+export function sanitizeTitleOptions(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const t = item.trim();
+    if (!t) continue;
+    const key = t.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(t);
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
 export function buildDeterministicClipMetadata(input: {
   projectTitle: string;
   clipTranscript: string;
@@ -94,6 +153,13 @@ export function buildDeterministicClipMetadata(input: {
         .slice(0, 4)
         .join(' ')}`,
     },
+    seoDescription: `${trimmedHook}\n\nIn this ${Math.round(
+      input.durationSec
+    )}-second highlight from "${input.projectTitle}", we break down ${topKeywords
+      .slice(0, 3)
+      .join(', ')}. ${hashtags
+      .slice(0, 5)
+      .join(' ')}`.slice(0, 900),
     hashtags,
     keywords: topKeywords,
     openingHook: trimmedHook,
@@ -146,6 +212,7 @@ Transcript: ${input.clipTranscript}
 
 Return JSON with keys:
 - titleOptions (array of 3 concise titles, no clickbait)
+- seoDescription (one SEO-friendly 2-3 sentence description for the clip)
 - descriptions: { youtubeShorts, instagramReels, tiktok, facebookReels }
 - hashtags (array of 6-8 relevant hashtags starting with #)
 - keywords (array of 5 keywords)
@@ -178,22 +245,53 @@ Return JSON with keys:
     const parsed = JSON.parse(rawText);
     const fallback = buildDeterministicClipMetadata(input);
 
+    const parsedTitles = sanitizeTitleOptions(parsed?.titleOptions);
+    const parsedHashtags = sanitizeHashtags(parsed?.hashtags);
+    const parsedKeywords = sanitizeKeywords(parsed?.keywords);
+
     return {
-      titleOptions:
-        Array.isArray(parsed.titleOptions) && parsed.titleOptions.length >= 3
-          ? parsed.titleOptions.slice(0, 3)
-          : fallback.titleOptions,
+      // Only accept the model's titles when we actually got a usable set of 3.
+      titleOptions: parsedTitles.length >= 3 ? parsedTitles : fallback.titleOptions,
       descriptions: {
-        youtubeShorts: parsed.descriptions?.youtubeShorts || fallback.descriptions.youtubeShorts,
-        instagramReels: parsed.descriptions?.instagramReels || fallback.descriptions.instagramReels,
-        tiktok: parsed.descriptions?.tiktok || fallback.descriptions.tiktok,
-        facebookReels: parsed.descriptions?.facebookReels || fallback.descriptions.facebookReels,
+        youtubeShorts:
+          typeof parsed?.descriptions?.youtubeShorts === 'string' &&
+          parsed.descriptions.youtubeShorts.trim()
+            ? parsed.descriptions.youtubeShorts.trim()
+            : fallback.descriptions.youtubeShorts,
+        instagramReels:
+          typeof parsed?.descriptions?.instagramReels === 'string' &&
+          parsed.descriptions.instagramReels.trim()
+            ? parsed.descriptions.instagramReels.trim()
+            : fallback.descriptions.instagramReels,
+        tiktok:
+          typeof parsed?.descriptions?.tiktok === 'string' && parsed.descriptions.tiktok.trim()
+            ? parsed.descriptions.tiktok.trim()
+            : fallback.descriptions.tiktok,
+        facebookReels:
+          typeof parsed?.descriptions?.facebookReels === 'string' &&
+          parsed.descriptions.facebookReels.trim()
+            ? parsed.descriptions.facebookReels.trim()
+            : fallback.descriptions.facebookReels,
       },
-      hashtags: Array.isArray(parsed.hashtags) ? parsed.hashtags : fallback.hashtags,
-      keywords: Array.isArray(parsed.keywords) ? parsed.keywords : fallback.keywords,
-      openingHook: parsed.openingHook || fallback.openingHook,
-      thumbnailText: parsed.thumbnailText || fallback.thumbnailText,
-      category: parsed.category || fallback.category,
+      seoDescription:
+        typeof parsed?.seoDescription === 'string' && parsed.seoDescription.trim()
+          ? parsed.seoDescription.trim().slice(0, 1200)
+          : fallback.seoDescription,
+      // An empty model array must still fall back, so a clip never ships with no hashtags.
+      hashtags: parsedHashtags.length > 0 ? parsedHashtags : fallback.hashtags,
+      keywords: parsedKeywords.length > 0 ? parsedKeywords : fallback.keywords,
+      openingHook:
+        typeof parsed?.openingHook === 'string' && parsed.openingHook.trim()
+          ? parsed.openingHook.trim()
+          : fallback.openingHook,
+      thumbnailText:
+        typeof parsed?.thumbnailText === 'string' && parsed.thumbnailText.trim()
+          ? parsed.thumbnailText.trim()
+          : fallback.thumbnailText,
+      category:
+        typeof parsed?.category === 'string' && parsed.category.trim()
+          ? parsed.category.trim()
+          : fallback.category,
       suggestedPostingWindow: fallback.suggestedPostingWindow,
       generatedBy: 'gemini',
     };
@@ -238,7 +336,7 @@ class OpenAICompatibleProvider implements AIProviderInterface {
           {
             role: 'system',
             content:
-              'Return JSON with titleOptions (3 strings), descriptions ({youtubeShorts, instagramReels, tiktok, facebookReels}), hashtags, keywords, openingHook, thumbnailText, category.',
+              'Return JSON with titleOptions (3 strings), seoDescription (2-3 SEO sentences), descriptions ({youtubeShorts, instagramReels, tiktok, facebookReels}), hashtags, keywords, openingHook, thumbnailText, category.',
           },
           {
             role: 'user',
@@ -256,10 +354,51 @@ class OpenAICompatibleProvider implements AIProviderInterface {
     const parsed = JSON.parse(data?.choices?.[0]?.message?.content || '{}');
     const fallback = buildDeterministicClipMetadata(input);
 
+    const parsedTitles = sanitizeTitleOptions(parsed?.titleOptions);
+    const parsedHashtags = sanitizeHashtags(parsed?.hashtags);
+    const parsedKeywords = sanitizeKeywords(parsed?.keywords);
+
     return {
-      ...fallback,
-      ...parsed,
-      descriptions: { ...fallback.descriptions, ...(parsed.descriptions || {}) },
+      titleOptions: parsedTitles.length >= 3 ? parsedTitles : fallback.titleOptions,
+      descriptions: {
+        youtubeShorts:
+          typeof parsed?.descriptions?.youtubeShorts === 'string' &&
+          parsed.descriptions.youtubeShorts.trim()
+            ? parsed.descriptions.youtubeShorts.trim()
+            : fallback.descriptions.youtubeShorts,
+        instagramReels:
+          typeof parsed?.descriptions?.instagramReels === 'string' &&
+          parsed.descriptions.instagramReels.trim()
+            ? parsed.descriptions.instagramReels.trim()
+            : fallback.descriptions.instagramReels,
+        tiktok:
+          typeof parsed?.descriptions?.tiktok === 'string' && parsed.descriptions.tiktok.trim()
+            ? parsed.descriptions.tiktok.trim()
+            : fallback.descriptions.tiktok,
+        facebookReels:
+          typeof parsed?.descriptions?.facebookReels === 'string' &&
+          parsed.descriptions.facebookReels.trim()
+            ? parsed.descriptions.facebookReels.trim()
+            : fallback.descriptions.facebookReels,
+      },
+      seoDescription:
+        typeof parsed?.seoDescription === 'string' && parsed.seoDescription.trim()
+          ? parsed.seoDescription.trim().slice(0, 1200)
+          : fallback.seoDescription,
+      hashtags: parsedHashtags.length > 0 ? parsedHashtags : fallback.hashtags,
+      keywords: parsedKeywords.length > 0 ? parsedKeywords : fallback.keywords,
+      openingHook:
+        typeof parsed?.openingHook === 'string' && parsed.openingHook.trim()
+          ? parsed.openingHook.trim()
+          : fallback.openingHook,
+      thumbnailText:
+        typeof parsed?.thumbnailText === 'string' && parsed.thumbnailText.trim()
+          ? parsed.thumbnailText.trim()
+          : fallback.thumbnailText,
+      category:
+        typeof parsed?.category === 'string' && parsed.category.trim()
+          ? parsed.category.trim()
+          : fallback.category,
       suggestedPostingWindow: fallback.suggestedPostingWindow,
       generatedBy: 'openai_compatible',
     };

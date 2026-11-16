@@ -1,4 +1,5 @@
 import type {
+  CaptionCue,
   ClipItem,
   ClipMetadata,
   CreditPackageItem,
@@ -63,6 +64,38 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   }
 
   return (payload?.data !== undefined ? payload.data : payload) as T;
+}
+
+/**
+ * Authenticated file download: fetches with the session cookie and saves the blob.
+ * Used for metadata/TXT/SRT/ZIP exports that require auth (unlike the tokenized
+ * `/stream`, `/thumbnail` and `/download` media URLs).
+ */
+async function fetchBlob(path: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}${path}`, { credentials: 'include' });
+  if (!res.ok) {
+    let message = `Download failed with status ${res.status}`;
+    try {
+      const payload = await res.json();
+      message = payload?.error?.message || message;
+    } catch {
+      // non-JSON error body
+    }
+    throw new ApiError(message, res.status, 'DOWNLOAD_FAILED');
+  }
+  return res.blob();
+}
+
+/** Triggers a browser "save as" for a previously fetched blob. */
+export function saveBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export const api = {
@@ -386,10 +419,15 @@ export const api = {
         method: 'PATCH',
         body: JSON.stringify({ title }),
       }),
-    updateMetadata: (id: string, metadata: Partial<ClipMetadata>) =>
+    updateMetadata: (id: string, metadata: Partial<ClipMetadata>, captions?: CaptionCue[]) =>
       request<{ clip: ClipItem }>(`/clips/${id}/metadata`, {
         method: 'PATCH',
-        body: JSON.stringify({ metadata }),
+        body: JSON.stringify(captions ? { metadata, captions } : { metadata }),
+      }),
+    updateCaptions: (id: string, captions: CaptionCue[]) =>
+      request<{ clip: ClipItem }>(`/clips/${id}/captions`, {
+        method: 'PATCH',
+        body: JSON.stringify({ captions }),
       }),
     regenerateMetadata: (id: string) =>
       request<{ clip: ClipItem; aiNotice?: string }>(`/clips/${id}/regenerate-metadata`, {
@@ -397,13 +435,22 @@ export const api = {
       }),
     regenerateVideo: (
       id: string,
-      overrides?: { aspectRatio?: string; captionStyle?: Partial<ClipItem['captionStyle']> }
+      overrides?: {
+        aspectRatio?: string;
+        captionStyle?: Partial<ClipItem['captionStyle']>;
+        captions?: CaptionCue[];
+      }
     ) =>
       request<{ job: ProcessingJobItem }>(`/clips/${id}/regenerate`, {
         method: 'POST',
         body: JSON.stringify(overrides || {}),
       }),
     delete: (id: string) => request<{ deleted: boolean }>(`/clips/${id}`, { method: 'DELETE' }),
+    /** Authenticated download helpers (fetch with bearer token, then save). */
+    downloadCaptionsSrt: (id: string) => fetchBlob(`/clips/${id}/captions.srt`),
+    downloadMetadataFile: (id: string, format: 'json' | 'txt' = 'json') =>
+      fetchBlob(`/clips/${id}/metadata?format=${format}`),
+    downloadPackage: (id: string) => fetchBlob(`/clips/${id}/package`),
     getBulkDownloadUrl: (clipIds: string[]) =>
       request<{ downloadUrl: string }>('/clips/bulk-download-token', {
         method: 'POST',

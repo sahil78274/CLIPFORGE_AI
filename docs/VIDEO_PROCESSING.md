@@ -31,6 +31,8 @@ To avoid cross-platform Windows drive-letter colon (`C:\...`) escaping issues in
    - `Watermark`: Persistent semi-transparent top-right creator handle/brand badge.
    - `Banner`: Timed intro (`0.0s–2.2s`) and outro (`duration-2.2s–duration`) callout cards.
 2. `renderer.py` executes `ffmpeg` with `cwd=clip_work_dir` and passes relative `ass=captions.ass`, guaranteeing identical behavior on Windows PowerShell, Linux, and Docker containers.
+3. `extract_clip_caption_cues()` reads the **same** segment/word data as the ASS generator and returns the word-timed cues (4-word groups, clip-relative seconds) as `captions[]` + `captionSource` in the render result, so the database, dashboard editor and SRT exports match the burned video exactly.
+4. Single-clip re-renders (`mode = regenerate_clip`) accept `regenerateSpec.captionCues`: the edited cues are replayed through the same `generate_ass_subtitles()` call (one segment per cue, preserving each cue's timing window), so no second caption pipeline exists. Cues without word timings are interpolated inside their own cue window.
 
 ---
 

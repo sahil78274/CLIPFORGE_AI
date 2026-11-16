@@ -269,6 +269,16 @@ describe('ClipForge AI — Full-Stack Integration, Media Pipeline, Wallet, Payme
         expect(clip.metadata.descriptions.instagramReels).toBeTruthy();
         expect(clip.metadata.descriptions.tiktok).toBeTruthy();
         expect(clip.metadata.descriptions.facebookReels).toBeTruthy();
+        // SEO description + hashtags are always present and content-derived
+        expect(clip.metadata.seoDescription).toBeTruthy();
+        expect(Array.isArray(clip.metadata.hashtags)).toBe(true);
+        expect(clip.metadata.hashtags.length).toBeGreaterThan(0);
+        for (const tag of clip.metadata.hashtags) expect(tag.startsWith('#')).toBe(true);
+        // Word-level captions burned into the render are persisted for editing/export
+        expect(Array.isArray(clip.captions)).toBe(true);
+        expect(clip.captions.length).toBeGreaterThan(0);
+        expect(clip.captions[0].text).toBeTruthy();
+        expect(clip.captions[0].endSec).toBeGreaterThan(clip.captions[0].startSec);
 
         // Probe physical rendered MP4 on disk via FFprobe
         const diskPath = path.join(env.LOCAL_STORAGE_DIR, clip.storageKey);
@@ -309,6 +319,92 @@ describe('ClipForge AI — Full-Stack Integration, Media Pipeline, Wallet, Payme
       // PK\x03\x04 ZIP header
       expect(zipBuf[0]).toBe(0x50);
       expect(zipBuf[1]).toBe(0x4b);
+
+      // Metadata/caption sidecars must be inside the archive, not just the MP4s.
+      const { execFileSync: execSync } = await import('child_process');
+      const zipPath = path.join(env.TEMP_WORKING_DIR, 'bulk_export.zip');
+      fs.mkdirSync(path.dirname(zipPath), { recursive: true });
+      fs.writeFileSync(zipPath, zipBuf);
+      const entries = execSync('python3', ['-c', `import zipfile;print('\\n'.join(zipfile.ZipFile(r"${zipPath}").namelist()))`])
+        .toString()
+        .trim()
+        .split('\n');
+      const mp4s = entries.filter((e) => e.endsWith('.mp4'));
+      expect(mp4s.length).toBe(2);
+      expect(entries.some((e) => e.endsWith('.txt'))).toBe(true);
+      expect(entries.some((e) => e.endsWith('.json'))).toBe(true);
+      expect(entries).toContain('clipforge_manifest.json');
+
+      // Single-clip authenticated exports: metadata JSON/TXT, SRT captions, package ZIP
+      const metaJsonRes = await userAAgent.get(`/api/v1/clips/${renderedClipIds[0]}/metadata`);
+      expect(metaJsonRes.status).toBe(200);
+      expect(metaJsonRes.body.metadata.titleOptions.length).toBe(3);
+      expect(Array.isArray(metaJsonRes.body.captions)).toBe(true);
+
+      const metaTxtRes = await userAAgent.get(
+        `/api/v1/clips/${renderedClipIds[0]}/metadata?format=txt`
+      );
+      expect(metaTxtRes.status).toBe(200);
+      expect(metaTxtRes.text).toContain('HASHTAGS');
+
+      const srtRes = await userAAgent.get(`/api/v1/clips/${renderedClipIds[0]}/captions.srt`);
+      expect(srtRes.status).toBe(200);
+      expect(srtRes.text).toMatch(/\d\d:\d\d:\d\d,\d{3} --> \d\d:\d\d:\d\d,\d{3}/);
+
+      const pkgRes = await userAAgent
+        .get(`/api/v1/clips/${renderedClipIds[0]}/package`)
+        .buffer(true)
+        .parse((res, cb) => {
+          const chunks: Buffer[] = [];
+          res.on('data', (c) => chunks.push(Buffer.from(c)));
+          res.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+      expect(pkgRes.status).toBe(200);
+      expect((pkgRes.body as Buffer)[0]).toBe(0x50);
+
+      // Metadata edits must deep-merge descriptions and sync the primary clip title
+      const editRes = await userAAgent
+        .patch(`/api/v1/clips/${renderedClipIds[0]}/metadata`)
+        .send({
+          metadata: {
+            titleOptions: ['Edited Primary Title', 'Alt Two', 'Alt Three'],
+            descriptions: { tiktok: 'Edited TikTok caption only' },
+            hashtags: ['edited', '#Duplicate', '#duplicate', 42],
+          },
+        });
+      expect(editRes.status).toBe(200);
+      const editedClip = editRes.body.data.clip;
+      expect(editedClip.title).toBe('Edited Primary Title');
+      expect(editedClip.metadata.descriptions.tiktok).toBe('Edited TikTok caption only');
+      // untouched platforms survive the partial patch
+      expect(editedClip.metadata.descriptions.youtubeShorts).toBeTruthy();
+      expect(editedClip.metadata.descriptions.youtubeShorts).not.toBe(
+        'Edited TikTok caption only'
+      );
+      // hashtags sanitized to unique, '#'-prefixed strings
+      expect(editedClip.metadata.hashtags).toEqual(['#edited', '#Duplicate']);
+
+      // Edited caption cues persist and drive the SRT export
+      const editedCues = [
+        { startSec: 0.2, endSec: 1.5, text: 'Edited first line' },
+        { startSec: 1.6, endSec: 2.9, text: 'Edited second line' },
+      ];
+      const capRes = await userAAgent
+        .patch(`/api/v1/clips/${renderedClipIds[0]}/captions`)
+        .send({ captions: editedCues });
+      expect(capRes.status).toBe(200);
+      expect(capRes.body.data.clip.captionSource).toBe('edited');
+      expect(capRes.body.data.clip.captions.length).toBe(2);
+
+      const editSrt = await userAAgent.get(`/api/v1/clips/${renderedClipIds[0]}/captions.srt`);
+      expect(editSrt.text).toContain('Edited first line');
+      expect(editSrt.text).toContain('Edited second line');
+
+      // Invalid caption payloads are rejected
+      const badCap = await userAAgent
+        .patch(`/api/v1/clips/${renderedClipIds[0]}/captions`)
+        .send({ captions: [{ startSec: 5, endSec: 1, text: '' }] });
+      expect(badCap.status).toBe(400);
 
       // Verify credit reservation settled cleanly
       const walletAfter = await userAAgent.get('/api/v1/wallet');
@@ -480,6 +576,14 @@ describe('ClipForge AI — Full-Stack Integration, Media Pipeline, Wallet, Payme
 
     const crossDel = await userBAgent.delete(`/api/v1/clips/${renderedClipIds[0]}`);
     expect(crossDel.status).toBe(403);
+
+    // User B cannot read User A's metadata/caption exports either
+    const crossMeta = await userBAgent.get(`/api/v1/clips/${renderedClipIds[0]}/metadata`);
+    expect(crossMeta.status).toBe(403);
+    const crossSrt = await userBAgent.get(`/api/v1/clips/${renderedClipIds[0]}/captions.srt`);
+    expect(crossSrt.status).toBe(403);
+    const crossPkg = await userBAgent.get(`/api/v1/clips/${renderedClipIds[0]}/package`);
+    expect(crossPkg.status).toBe(403);
 
     // Normal User B cannot access Admin endpoints
     const nonAdminAttempt = await userBAgent.get('/api/v1/admin/users');

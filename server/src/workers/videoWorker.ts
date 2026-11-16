@@ -399,6 +399,10 @@ export async function executeProcessingJob(
           category: existingClip.category,
           selectionReason: existingClip.selectionReason,
           engagementScore: existingClip.engagementScore,
+          // Edited caption cues (if any) are re-burned by the same ASS generator.
+          ...(Array.isArray(claimed.overrides?.captionCues)
+            ? { captionCues: claimed.overrides?.captionCues }
+            : {}),
         };
       }
     }
@@ -634,6 +638,8 @@ export async function executeProcessingJob(
               durationSec: rc.durationSec,
               editingApplied: rc.editingApplied || [],
               captionStyle: effectiveSettings.captionStyle,
+              captions: rc.captions || [],
+              captionSource: rc.captionSource,
               status: 'ready',
             },
           },
@@ -663,6 +669,8 @@ export async function executeProcessingJob(
           height: rc.height,
           status: 'ready',
           captionStyle: effectiveSettings.captionStyle,
+          captions: rc.captions || [],
+          captionSource: rc.captionSource,
           editingApplied: rc.editingApplied || [],
           metadata,
         });

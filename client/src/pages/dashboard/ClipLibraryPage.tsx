@@ -6,6 +6,8 @@ import {
   Copy,
   Download,
   Edit3,
+  FileJson,
+  FileText,
   Film,
   Play,
   RefreshCw,
@@ -28,9 +30,9 @@ import {
   Skeleton,
   Textarea,
 } from '../../components/ui';
-import { api } from '../../services/api';
+import { api, saveBlob } from '../../services/api';
 import { useToastStore } from '../../stores/toastStore';
-import type { ClipItem } from '../../types/api';
+import type { CaptionCue, ClipItem } from '../../types/api';
 import { formatBytes, formatDuration } from '../../utils/format';
 
 export const ClipLibraryPage: React.FC = () => {
@@ -51,7 +53,12 @@ export const ClipLibraryPage: React.FC = () => {
   const [newTitle, setNewTitle] = useState('');
   const [regenClip, setRegenClip] = useState<ClipItem | null>(null);
   const [regenAspect, setRegenAspect] = useState<'9:16' | '1:1' | '16:9'>('9:16');
+  const [regenCaptionStyle, setRegenCaptionStyle] = useState<Partial<ClipItem['captionStyle']>>({});
   const [savingMeta, setSavingMeta] = useState(false);
+  // Caption editor (word-timed cues actually burned into the MP4)
+  const [captionDraft, setCaptionDraft] = useState<CaptionCue[]>([]);
+  const [savingCaptions, setSavingCaptions] = useState(false);
+  const [exportingId, setExportingId] = useState<string | null>(null);
   const [regeneratingMeta, setRegeneratingMeta] = useState(false);
   const [bulkLoading, setBulkLoading] = useState(false);
 
@@ -120,7 +127,13 @@ export const ClipLibraryPage: React.FC = () => {
   const handleRegenerateVideo = async () => {
     if (!regenClip) return;
     try {
-      await api.clips.regenerateVideo(regenClip._id, { aspectRatio: regenAspect });
+      // Re-burn this clip's own persisted cues (which already include any saved edits).
+      const clipCues = (regenClip.captions || []).filter((c) => c.text.trim());
+      await api.clips.regenerateVideo(regenClip._id, {
+        aspectRatio: regenAspect,
+        captionStyle: regenCaptionStyle,
+        ...(clipCues.length ? { captions: clipCues } : {}),
+      });
       pushToast({
         type: 'success',
         title: 'Clip re-render queued',
@@ -133,11 +146,58 @@ export const ClipLibraryPage: React.FC = () => {
     }
   };
 
+  const openMetadataModal = (clip: ClipItem) => {
+    setMetadataClip(clip);
+    setCaptionDraft((clip.captions || []).map((c) => ({ ...c })));
+  };
+
+  const handleSaveCaptions = async () => {
+    if (!metadataClip) return;
+    setSavingCaptions(true);
+    try {
+      const res = await api.clips.updateCaptions(metadataClip._id, captionDraft);
+      setMetadataClip(res.clip);
+      setCaptionDraft((res.clip.captions || []).map((c) => ({ ...c })));
+      pushToast({
+        type: 'success',
+        title: 'Captions saved',
+        description: 'Re-render the clip to burn the edited captions into the MP4.',
+      });
+      void queryClient.invalidateQueries({ queryKey: ['clips-library'] });
+    } catch (err: any) {
+      pushToast({ type: 'error', title: 'Caption save failed', description: err?.message });
+    } finally {
+      setSavingCaptions(false);
+    }
+  };
+
+  const handleExport = async (clip: ClipItem, kind: 'package' | 'metadata' | 'srt') => {
+    setExportingId(clip._id);
+    try {
+      if (kind === 'package') {
+        saveBlob(await api.clips.downloadPackage(clip._id), `${clip.title}_package.zip`);
+      } else if (kind === 'metadata') {
+        saveBlob(await api.clips.downloadMetadataFile(clip._id, 'txt'), `${clip.title}_metadata.txt`);
+      } else {
+        saveBlob(await api.clips.downloadCaptionsSrt(clip._id), `${clip.title}.srt`);
+      }
+      pushToast({ type: 'success', title: 'Export ready', description: 'Download started.' });
+    } catch (err: any) {
+      pushToast({ type: 'error', title: 'Export failed', description: err?.message });
+    } finally {
+      setExportingId(null);
+    }
+  };
+
   const handleSaveMetadata = async () => {
     if (!metadataClip) return;
     setSavingMeta(true);
     try {
-      const res = await api.clips.updateMetadata(metadataClip._id, metadataClip.metadata);
+      const res = await api.clips.updateMetadata(
+        metadataClip._id,
+        metadataClip.metadata,
+        captionDraft.length ? captionDraft : undefined
+      );
       setMetadataClip(res.clip);
       pushToast({ type: 'success', title: 'Metadata saved' });
       void queryClient.invalidateQueries({ queryKey: ['clips-library'] });
@@ -354,7 +414,7 @@ export const ClipLibraryPage: React.FC = () => {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => setMetadataClip(clip)}
+                      onClick={() => openMetadataModal(clip)}
                       leftIcon={<Wand2 className="w-3.5 h-3.5 text-[#A58DFF]" />}
                     >
                       AI Copy
@@ -380,12 +440,24 @@ export const ClipLibraryPage: React.FC = () => {
                     </button>
                   </div>
 
-                  {clip.downloadUrl && clip.status === 'ready' && (
-                    <a href={clip.downloadUrl} download>
-                      <Button size="sm" leftIcon={<Download className="w-3.5 h-3.5" />}>
-                        Download
+                  {clip.status === 'ready' && (
+                    <div className="flex items-center gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => void handleExport(clip, 'package')}
+                        loading={exportingId === clip._id}
+                        title="Download MP4 + metadata TXT/JSON + captions SRT as a ZIP"
+                        leftIcon={<FileJson className="w-3.5 h-3.5" />}
+                      >
+                        With Metadata
                       </Button>
-                    </a>
+                      <a href={clip.downloadUrl} download>
+                        <Button size="sm" leftIcon={<Download className="w-3.5 h-3.5" />}>
+                          MP4
+                        </Button>
+                      </a>
+                    </div>
                   )}
                 </div>
               </Card>
@@ -458,6 +530,72 @@ export const ClipLibraryPage: React.FC = () => {
             onChange={(e) => setRegenAspect(e.target.value as any)}
             options={ASPECT_RATIOS.map((r) => ({ value: r, label: r }))}
           />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Select
+              label="Caption Animation"
+              value={regenCaptionStyle.animation || regenClip?.captionStyle.animation || 'word_pop'}
+              onChange={(e) =>
+                setRegenCaptionStyle({ ...regenCaptionStyle, animation: e.target.value as any })
+              }
+              options={[
+                { value: 'word_pop', label: 'Word pop' },
+                { value: 'karaoke', label: 'Karaoke highlight' },
+                { value: 'fade', label: 'Fade' },
+                { value: 'none', label: 'Static' },
+              ]}
+            />
+            <Select
+              label="Caption Position"
+              value={regenCaptionStyle.position || regenClip?.captionStyle.position || 'bottom'}
+              onChange={(e) =>
+                setRegenCaptionStyle({ ...regenCaptionStyle, position: e.target.value as any })
+              }
+              options={[
+                { value: 'bottom', label: 'Bottom' },
+                { value: 'middle', label: 'Middle' },
+                { value: 'top', label: 'Top' },
+              ]}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <Input
+              type="color"
+              label="Text Color"
+              value={regenCaptionStyle.textColor || regenClip?.captionStyle.textColor || '#FFFFFF'}
+              onChange={(e) => setRegenCaptionStyle({ ...regenCaptionStyle, textColor: e.target.value })}
+            />
+            <Input
+              type="color"
+              label="Highlight Color"
+              value={
+                regenCaptionStyle.highlightColor || regenClip?.captionStyle.highlightColor || '#38BDF8'
+              }
+              onChange={(e) =>
+                setRegenCaptionStyle({ ...regenCaptionStyle, highlightColor: e.target.value })
+              }
+            />
+            <Input
+              type="number"
+              min={18}
+              max={96}
+              label="Font Size"
+              value={regenCaptionStyle.fontSize || regenClip?.captionStyle.fontSize || 42}
+              onChange={(e) =>
+                setRegenCaptionStyle({ ...regenCaptionStyle, fontSize: Number(e.target.value) })
+              }
+            />
+          </div>
+
+          {regenClip?.captions?.length ? (
+            <p className="text-[11px] text-zinc-500">
+              {regenClip.captionSource === 'edited'
+                ? 'Your edited caption lines will be re-burned into the clip.'
+                : 'Captions will be re-timed from the transcription.'}
+            </p>
+          ) : null}
+
           <div className="flex justify-end gap-2">
             <Button variant="ghost" onClick={() => setRegenClip(null)}>
               Cancel
@@ -550,6 +688,31 @@ export const ClipLibraryPage: React.FC = () => {
               />
             </div>
 
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-zinc-300">
+                  SEO Description (canonical)
+                </span>
+                <button
+                  type="button"
+                  onClick={() => copyText(metadataClip.metadata.seoDescription || '', 'SEO description')}
+                  className="text-[11px] text-[#A58DFF] hover:underline"
+                >
+                  Copy
+                </button>
+              </div>
+              <Textarea
+                rows={2}
+                value={metadataClip.metadata.seoDescription || ''}
+                onChange={(e) =>
+                  setMetadataClip({
+                    ...metadataClip,
+                    metadata: { ...metadataClip.metadata, seoDescription: e.target.value },
+                  })
+                }
+              />
+            </div>
+
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               {(
                 [
@@ -608,6 +771,114 @@ export const ClipLibraryPage: React.FC = () => {
                 })
               }
             />
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Input
+                label="Keywords (comma separated)"
+                value={(metadataClip.metadata.keywords || []).join(', ')}
+                onChange={(e) =>
+                  setMetadataClip({
+                    ...metadataClip,
+                    metadata: {
+                      ...metadataClip.metadata,
+                      keywords: e.target.value
+                        .split(',')
+                        .map((t) => t.trim())
+                        .filter(Boolean),
+                    },
+                  })
+                }
+              />
+              <div className="flex items-end">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() =>
+                    copyText(
+                      [
+                        metadataClip.metadata.descriptions.youtubeShorts,
+                        (metadataClip.metadata.hashtags || []).join(' '),
+                      ]
+                        .filter(Boolean)
+                        .join('\n\n'),
+                      'Caption + hashtags'
+                    )
+                  }
+                >
+                  <Copy className="w-3.5 h-3.5 mr-1.5" /> Copy caption + hashtags
+                </Button>
+              </div>
+            </div>
+
+            {/* Word-timed captions burned into the MP4 */}
+            <div className="space-y-2 pt-3 border-t border-white/[0.08]">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <label className="text-xs font-semibold text-zinc-300">
+                    Captions burned into this clip ({captionDraft.length} cues)
+                  </label>
+                  <p className="text-[11px] text-zinc-500">
+                    {metadataClip.captionSource === 'edited'
+                      ? 'Edited captions — re-render to burn these into the MP4.'
+                      : metadataClip.captions?.length
+                        ? 'Word-timed captions rendered from the transcription. Edit any line, then save.'
+                        : 'No caption cues stored for this clip yet.'}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={!captionDraft.length}
+                    onClick={() => void handleExport(metadataClip, 'srt')}
+                    leftIcon={<FileText className="w-3.5 h-3.5" />}
+                  >
+                    Export SRT
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    loading={savingCaptions}
+                    disabled={!captionDraft.length}
+                    onClick={handleSaveCaptions}
+                  >
+                    Save Captions
+                  </Button>
+                </div>
+              </div>
+
+              {captionDraft.length > 0 ? (
+                <div className="max-h-56 overflow-y-auto space-y-1.5 pr-1">
+                  {captionDraft.map((cue, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <span className="text-[10px] font-mono text-zinc-500 w-20 shrink-0">
+                        {cue.startSec.toFixed(2)}s
+                      </span>
+                      <Input
+                        value={cue.text}
+                        onChange={(e) => {
+                          const next = [...captionDraft];
+                          next[idx] = { ...next[idx], text: e.target.value };
+                          setCaptionDraft(next);
+                        }}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setCaptionDraft(captionDraft.filter((_, i) => i !== idx))}
+                        className="p-1.5 rounded-lg text-zinc-500 hover:text-red-400 hover:bg-red-500/10 shrink-0"
+                        title="Remove caption line"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-zinc-500">
+                  Re-generate this clip to capture its word-level caption timing.
+                </p>
+              )}
+            </div>
 
             {metadataClip.metadata.suggestedPostingWindow && (
               <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/[0.07] text-xs text-zinc-400">

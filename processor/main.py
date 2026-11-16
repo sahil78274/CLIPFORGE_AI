@@ -36,7 +36,10 @@ from processor.analysis.content_analyzer import analyze_audio_and_silence_profil
 from processor.clip_detection.moment_detector import detect_candidate_moments
 from processor.clip_detection.clip_selector import select_unique_clips
 from processor.video_editor.reframer import compute_reframe_filter
-from processor.video_editor.subtitle_generator import generate_ass_subtitles
+from processor.video_editor.subtitle_generator import (
+    extract_clip_caption_cues,
+    generate_ass_subtitles,
+)
 from processor.video_editor.audio_chain import (
     build_audio_filter_chain,
     synthesize_licensed_ambient_bed,
@@ -448,6 +451,14 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
     caption_style = settings.get("captionStyle") or {}
     bg_music_style = str(settings.get("backgroundMusic") or "none")
 
+    # User-edited caption cues for a single-clip re-render, if any. This reuses the same
+    # ASS generator below rather than introducing a second caption pipeline.
+    edited_caption_cues = None
+    if mode == "regenerate_clip" and job_cfg.get("regenerateSpec"):
+        raw_cues = job_cfg["regenerateSpec"].get("captionCues")
+        if isinstance(raw_cues, list) and raw_cues:
+            edited_caption_cues = raw_cues
+
     rendered_outputs: List[Dict[str, Any]] = []
     total_clips = max(1, len(selected_clips))
 
@@ -488,19 +499,82 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
         )
 
         ass_file = os.path.join(clip_work, "captions.ass")
-        sub_applied = generate_ass_subtitles(
-            ass_path=ass_file,
-            play_w=target_w,
-            play_h=target_h,
-            clip_start=c_start,
-            clip_end=c_end,
-            segments=all_segments,
-            caption_style=caption_style,
-            watermark_enabled=bool(settings.get("watermarkEnabled", False)),
-            watermark_text=str(settings.get("watermarkText") or ""),
-            intro_text=str(settings.get("introText") or ""),
-            outro_text=str(settings.get("outroText") or ""),
-        )
+
+        if edited_caption_cues is None:
+            sub_applied = generate_ass_subtitles(
+                ass_path=ass_file,
+                play_w=target_w,
+                play_h=target_h,
+                clip_start=c_start,
+                clip_end=c_end,
+                segments=all_segments,
+                caption_style=caption_style,
+                watermark_enabled=bool(settings.get("watermarkEnabled", False)),
+                watermark_text=str(settings.get("watermarkText") or ""),
+                intro_text=str(settings.get("introText") or ""),
+                outro_text=str(settings.get("outroText") or ""),
+            )
+            clip_caption_cues, used_real_word_timings = extract_clip_caption_cues(
+                segments=all_segments,
+                clip_start=c_start,
+                clip_end=c_end,
+            )
+            caption_source = (
+                "word_timestamps" if used_real_word_timings else "segment_interpolated"
+            )
+        else:
+            # Re-render with the user's edited word-timed cues (same generator/style).
+            clip_caption_cues = [
+                {
+                    "startSec": round(float(c.get("startSec", 0.0)), 2),
+                    "endSec": round(float(c.get("endSec", 0.0)), 2),
+                    "text": str(c.get("text", "")).strip(),
+                    "words": [
+                        {
+                            "word": str(w.get("word", "")).strip(),
+                            "startSec": round(float(w.get("startSec", 0.0)), 2),
+                            "endSec": round(float(w.get("endSec", 0.0)), 2),
+                        }
+                        for w in (c.get("words") or [])
+                    ],
+                }
+                for c in edited_caption_cues
+            ]
+            caption_source = "edited"
+            # Feed the edited cues back through the SAME ASS generator (clip-relative
+            # segment form) so styling/animation stay identical to derived captions.
+            sub_applied = generate_ass_subtitles(
+                ass_path=ass_file,
+                play_w=target_w,
+                play_h=target_h,
+                clip_start=0.0,
+                clip_end=c_dur,
+                # One segment per cue so each cue keeps its own timing window; when a
+                # cue has no word timings the generator interpolates inside that window.
+                segments=[
+                    {
+                        "start": cue["startSec"],
+                        "end": cue["endSec"],
+                        "text": cue["text"],
+                        "words": [
+                            {
+                                "word": w["word"],
+                                "start": w["startSec"],
+                                "end": w["endSec"],
+                            }
+                            for w in (cue.get("words") or [])
+                        ],
+                    }
+                    for cue in clip_caption_cues
+                ],
+                caption_style=caption_style,
+                watermark_enabled=bool(settings.get("watermarkEnabled", False)),
+                watermark_text=str(settings.get("watermarkText") or ""),
+                intro_text=str(settings.get("introText") or ""),
+                outro_text=str(settings.get("outroText") or ""),
+            )
+            if clip_caption_cues:
+                sub_applied.append("Edited word-timed captions")
 
         af_chain, af_applied = build_audio_filter_chain(
             clip_dur=c_dur,
@@ -552,6 +626,8 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
                 "selectionReason": clip_cand["reason"],
                 "category": clip_cand["category"],
                 "engagementScore": clip_cand["engagementScore"],
+                "captions": clip_caption_cues,
+                "captionSource": caption_source,
                 "editingApplied": vf_applied + sub_applied + af_applied,
             }
         )

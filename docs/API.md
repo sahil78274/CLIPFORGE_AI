@@ -56,15 +56,19 @@ Authentication uses an HTTP-only signed JWT cookie (`clipforge_access_token`) or
 - `GET /api/v1/clips` *(Auth)* — Filterable by `projectId`, `aspectRatio`, `search`, `sort` (`newest` | `score` | `duration`).
 - `GET /api/v1/clips/:id` *(Auth)* — Single clip with signed media URLs.
 - `PATCH /api/v1/clips/:id` *(Auth)* — Body: `{ title }`. Renames clip.
-- `PATCH /api/v1/clips/:id/metadata` *(Auth)* — Updates platform descriptions, hashtags, CTA, or title options.
+- `PATCH /api/v1/clips/:id/metadata` *(Auth)* — Body: `{ metadata?, captions? }`. Field-wise merge of platform descriptions/hashtags/keywords/title options; sanitises hashtags (`#`-prefixed, deduped) and syncs the clip title from `titleOptions[0]`.
+- `PATCH /api/v1/clips/:id/captions` *(Auth)* — Body: `{ captions: [{ startSec, endSec, text, words? }] }`. Persists word-timed caption cues (clip-relative seconds) for display, editing and SRT export.
+- `GET /api/v1/clips/:id/metadata?format=json|txt` *(Auth)* — Downloads the clip's publishing metadata (JSON includes captions; TXT is human-readable copy).
+- `GET /api/v1/clips/:id/captions.srt` *(Auth)* — Downloads word-timed captions as SRT (falls back to the transcript).
+- `GET /api/v1/clips/:id/package` *(Auth)* — ZIP containing the MP4 + metadata `TXT` + metadata `JSON` + captions `SRT`.
 - `POST /api/v1/clips/:id/regenerate-metadata` *(Auth)* — Re-runs AI/NLP social copy generation on the clip's transcript.
-- `POST /api/v1/clips/:id/regenerate` *(Auth)* — Body: `{ startSec?, endSec?, aspectRatio?, captionStyle? }`. Reserves 4 credits and queues a `regenerate_clip` FFmpeg render job.
+- `POST /api/v1/clips/:id/regenerate` *(Auth)* — Body: `{ aspectRatio?, captionStyle?, captions? }`. Reserves 5 credits and queues a `regenerate_clip` FFmpeg render job. Passing `captions` re-burns the edited cues through the same ASS caption generator.
 - `DELETE /api/v1/clips/:id` *(Auth)* — Removes clip record and underlying video/thumbnail files.
 - `POST /api/v1/clips/bulk-download-token` *(Auth)* — Body: `{ clipIds: string[] }`. Verifies ownership and issues a short-lived signed ZIP download URL.
 - `GET /api/v1/clips/:id/stream?token=...` — Signed HTTP `206` Range video stream.
 - `GET /api/v1/clips/:id/thumbnail?token=...` — Signed JPEG thumbnail stream.
 - `GET /api/v1/clips/:id/download?token=...` — Signed MP4 attachment download.
-- `GET /api/v1/clips/bulk-download?token=...` — Streams on-the-fly ZIP archive of owned clips.
+- `GET /api/v1/clips/bulk-download?token=...` — Streams an on-the-fly ZIP of owned clips. Each clip contributes `NN_title.mp4` **plus** `NN_title.txt` (publishing copy), `NN_title.json` (metadata + caption cues) and `NN_title.srt`, together with a top-level `clipforge_manifest.json`.
 
 ## 6. Processing Jobs (`/api/v1/jobs`)
 - `GET /api/v1/jobs` *(Auth)* — Lists user's jobs (`status` filter optional).

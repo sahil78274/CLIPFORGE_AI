@@ -156,6 +156,8 @@ export interface VideoRecord {
 
 export interface ClipMetadata {
   titleOptions: string[];
+  /** Canonical SEO description; the 4 platform fields below are per-destination variants. */
+  seoDescription: string;
   descriptions: {
     youtubeShorts: string;
     instagramReels: string;
@@ -173,6 +175,19 @@ export interface ClipMetadata {
     windowsByPlatform?: Record<string, string>;
   };
   generatedBy: 'gemini' | 'openai_compatible' | 'deterministic_nlp';
+}
+
+export interface CaptionWord {
+  word: string;
+  startSec: number;
+  endSec: number;
+}
+
+export interface CaptionCue {
+  startSec: number;
+  endSec: number;
+  text: string;
+  words?: CaptionWord[];
 }
 
 export interface ClipItem {
@@ -194,6 +209,9 @@ export interface ClipItem {
   height: number;
   status: 'pending' | 'rendering' | 'ready' | 'failed';
   captionStyle: CaptionStyleConfig;
+  /** Word-timed caption cues burned into the MP4 (clip-relative seconds). */
+  captions?: CaptionCue[];
+  captionSource?: 'word_timestamps' | 'segment_interpolated' | 'edited';
   editingApplied: string[];
   metadata: ClipMetadata;
   previewUrl?: string;
