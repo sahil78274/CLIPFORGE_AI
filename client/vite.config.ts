@@ -1,15 +1,16 @@
+import path from 'path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
 export default defineConfig({
   plugins: [react()],
-  optimizeDeps: {
-    include: ['@clipforge/shared'],
-  },
-  build: {
-    commonjsOptions: {
-      include: [/shared/, /node_modules/],
+  resolve: {
+    alias: {
+      '@clipforge/shared': path.resolve(__dirname, '../shared/src/index.ts'),
     },
+  },
+  optimizeDeps: {
+    exclude: ['@clipforge/shared'],
   },
   server: {
     host: '0.0.0.0',
