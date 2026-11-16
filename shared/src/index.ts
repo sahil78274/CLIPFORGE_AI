@@ -97,13 +97,72 @@ export interface YouTubeVideoMetadata {
   videoId: string;
   canonicalUrl: string;
   title: string;
+  channelId?: string;
   channelName: string;
+  channelOwnershipVerified?: boolean;
   thumbnailUrl: string;
   durationSec: number | null;
   privacyStatus: 'public' | 'unlisted' | 'private' | 'unavailable';
   isLiveStream?: boolean;
-  metadataSource: 'youtube_data_api' | 'authorized_export_manifest' | 'youtube_oembed';
+  metadataSource:
+    | 'youtube_oauth_api'
+    | 'youtube_data_api'
+    | 'authorized_export_manifest'
+    | 'youtube_oembed';
 }
+
+export interface GoogleConnectedChannel {
+  channelId: string;
+  title: string;
+  customUrl?: string;
+  thumbnailUrl?: string;
+}
+
+export interface GoogleOAuthStatus {
+  oauthConfigured: boolean;
+  connected: boolean;
+  email?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  scopes?: string[];
+  hasYouTubeScope?: boolean;
+  hasDriveScope?: boolean;
+  channels?: GoogleConnectedChannel[];
+  setupInstructions?: string;
+}
+
+export type DriveMatchConfidence = 'exact' | 'high' | 'medium' | 'none';
+
+export interface DriveVideoMatchInfo {
+  confidence: DriveMatchConfidence;
+  score: number;
+  matchedByVideoId: boolean;
+  matchedByTitle: boolean;
+  matchedByDuration: boolean;
+  durationDeltaSec: number | null;
+  warning?: string;
+}
+
+export interface GoogleDriveVideoFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  sizeBytes: number | null;
+  durationSec: number | null;
+  width?: number | null;
+  height?: number | null;
+  thumbnailUrl?: string;
+  modifiedTime?: string;
+  match?: DriveVideoMatchInfo;
+}
+
+export type AuthorizedMediaSourceType =
+  | 'google_drive'
+  | 'direct_authorized_url'
+  | 'owner_export_dir'
+  | 'authorized_http_provider'
+  | 'custom_command'
+  | 'unavailable';
 
 export interface ChunkProgressInfo {
   enabled: boolean;

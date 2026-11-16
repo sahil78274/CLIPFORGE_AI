@@ -74,6 +74,28 @@ export async function requireAuth(req: Request, _res: Response, next: NextFuncti
   }
 }
 
+export async function optionalAuth(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+): Promise<void> {
+  try {
+    const token = extractToken(req);
+    if (!token) {
+      next();
+      return;
+    }
+    const decoded = jwt.verify(token, env.JWT_ACCESS_SECRET) as JwtAccessPayload;
+    const user = await User.findById(decoded.sub);
+    if (user && user.status === 'active') {
+      req.user = user;
+    }
+  } catch {
+    // Ignore invalid/expired optional auth tokens
+  }
+  next();
+}
+
 export function requireAdmin(req: Request, _res: Response, next: NextFunction): void {
   if (!req.user) {
     next(new UnauthorizedError());

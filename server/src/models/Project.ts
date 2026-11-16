@@ -16,11 +16,16 @@ export interface IProject extends Document {
     videoId: string;
     canonicalUrl: string;
     title: string;
+    channelId?: string;
     channelName: string;
+    channelOwnershipVerified?: boolean;
     thumbnailUrl: string;
     durationSec: number | null;
     metadataSource: string;
     mediaAdapterUsed?: string;
+    googleDriveFileId?: string;
+    googleDriveFileName?: string;
+    driveMatchConfidence?: string;
   };
   status: 'draft' | 'importing' | 'queued' | 'processing' | 'completed' | 'failed' | 'cancelled';
   settings: ProjectProcessingSettings;

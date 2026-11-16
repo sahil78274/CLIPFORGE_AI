@@ -4,6 +4,8 @@ import type {
   CreditPackageItem,
   CreditTransactionItem,
   DashboardOverviewData,
+  GoogleDriveVideoFile,
+  GoogleOAuthStatus,
   NotificationItem,
   PaymentRecord,
   ProcessingJobItem,
@@ -228,8 +230,43 @@ export const api = {
         maxDurationSec: number;
         defaultChunkDurationSec: number;
         setupInstructions: string;
+        googleAuth?: GoogleOAuthStatus;
       }>('/youtube/adapter-status'),
-    fetchVideo: (body: { url: string; authorizedMediaUrl?: string }) =>
+    googleOAuthStatus: () => request<GoogleOAuthStatus>('/youtube/oauth/google/status'),
+    googleOAuthAuthorize: (body?: { redirectPath?: string; loginHint?: string }) =>
+      request<{ authorizationUrl: string; state: string; scopes: string[] }>(
+        '/youtube/oauth/google/authorize',
+        {
+          method: 'POST',
+          body: JSON.stringify(body || {}),
+        }
+      ),
+    googleOAuthDisconnect: () =>
+      request<GoogleOAuthStatus>('/youtube/oauth/google/disconnect', {
+        method: 'POST',
+      }),
+    listDriveFiles: (params?: {
+      query?: string;
+      pageToken?: string;
+      pageSize?: number;
+      youtubeUrl?: string;
+    }) => {
+      const qs = new URLSearchParams();
+      if (params?.query) qs.set('query', params.query);
+      if (params?.pageToken) qs.set('pageToken', params.pageToken);
+      if (params?.pageSize) qs.set('pageSize', String(params.pageSize));
+      if (params?.youtubeUrl) qs.set('youtubeUrl', params.youtubeUrl);
+      return request<{
+        files: GoogleDriveVideoFile[];
+        nextPageToken?: string;
+        autoMatchedFile?: GoogleDriveVideoFile;
+      }>(`/youtube/drive/files?${qs.toString()}`);
+    },
+    fetchVideo: (body: {
+      url: string;
+      authorizedMediaUrl?: string;
+      googleDriveFileId?: string;
+    }) =>
       request<YouTubeFetchResponse>('/youtube/fetch', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -238,6 +275,7 @@ export const api = {
       url: string;
       title?: string;
       authorizedMediaUrl?: string;
+      googleDriveFileId?: string;
       settings: ProjectProcessingSettings;
       autoStart?: boolean;
     }) =>

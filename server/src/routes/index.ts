@@ -3,7 +3,7 @@ import path from 'path';
 import { Router } from 'express';
 import multer from 'multer';
 import { env } from '../config/env';
-import { requireAdmin, requireAuth } from '../middleware/auth';
+import { optionalAuth, requireAdmin, requireAuth } from '../middleware/auth';
 import { authRateLimiter, uploadAndJobLimiter } from '../middleware/rateLimit';
 import { validateBody } from '../middleware/validate';
 import { asyncHandler, BadRequestError } from '../utils/errors';
@@ -16,6 +16,7 @@ import {
   createPaymentOrderSchema,
   createProjectSchema,
   forgotPasswordSchema,
+  googleOAuthAuthorizeSchema,
   importUrlSchema,
   loginSchema,
   registerSchema,
@@ -176,7 +177,36 @@ apiV1Router.use('/videos', videosRouter);
 
 /* --- /api/v1/youtube --- */
 const youtubeRouter = Router();
-youtubeRouter.get('/adapter-status', asyncHandler(youtubeController.adapterStatus));
+youtubeRouter.get(
+  '/adapter-status',
+  optionalAuth,
+  asyncHandler(youtubeController.adapterStatus)
+);
+youtubeRouter.get(
+  '/oauth/google/status',
+  requireAuth,
+  asyncHandler(youtubeController.googleOAuthStatus)
+);
+youtubeRouter.post(
+  '/oauth/google/authorize',
+  requireAuth,
+  validateBody(googleOAuthAuthorizeSchema),
+  asyncHandler(youtubeController.googleOAuthAuthorize)
+);
+youtubeRouter.get(
+  '/oauth/google/callback',
+  asyncHandler(youtubeController.googleOAuthCallback)
+);
+youtubeRouter.post(
+  '/oauth/google/disconnect',
+  requireAuth,
+  asyncHandler(youtubeController.googleOAuthDisconnect)
+);
+youtubeRouter.get(
+  '/drive/files',
+  requireAuth,
+  asyncHandler(youtubeController.listGoogleDriveFiles)
+);
 youtubeRouter.post(
   '/fetch',
   requireAuth,
