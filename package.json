@@ -9,13 +9,13 @@
     "client"
   ],
   "scripts": {
-    "dev:server": "npm --workspace=server run dev",
-    "dev:client": "npm --workspace=client run dev",
-    "worker": "npm --workspace=server run worker",
+    "dev:server": "npm --workspace=shared run build && npm --workspace=server run dev",
+    "dev:client": "npm --workspace=shared run build && npm --workspace=client run dev",
+    "worker": "npm --workspace=shared run build && npm --workspace=server run worker",
     "build": "npm --workspace=shared run build && npm --workspace=server run build && npm --workspace=client run build",
     "typecheck": "npm --workspace=shared run typecheck && npm --workspace=server run typecheck && npm --workspace=client run typecheck",
-    "test": "npm --workspace=server run test",
-    "seed": "npm --workspace=server run seed"
+    "test": "npm --workspace=shared run build && npm --workspace=server run test",
+    "seed": "npm --workspace=shared run build && npm --workspace=server run seed"
   },
   "engines": {
     "node": ">=20.0.0"

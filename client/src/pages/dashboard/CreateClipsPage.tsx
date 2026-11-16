@@ -151,7 +151,9 @@ export const CreateClipsPage: React.FC = () => {
   const minCredits = capsQuery.data?.limits.minCreditsPerJob ?? 10;
 
   const effectiveDurationForCalc =
-    tab === 'youtube' && ytReport?.video.durationSec
+    tab === 'youtube' &&
+    typeof ytReport?.video.durationSec === 'number' &&
+    ytReport.video.durationSec > 0
       ? ytReport.video.durationSec
       : detectedDurationSec;
 

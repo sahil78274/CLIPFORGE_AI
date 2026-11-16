@@ -153,7 +153,9 @@ export function estimateProcessingCredits(
   clipCount: number,
   limits: { creditsPerMinuteProcessed: number; minCreditsPerJob: number }
 ): number {
-  const safeDur = Math.max(1, durationSec);
+  const numericDuration = Number.isFinite(durationSec) ? durationSec : 60;
+  const numericClipCount = Number.isFinite(clipCount) ? clipCount : 3;
+  const safeDur = Math.max(1, numericDuration);
   // Absorb sub-second AAC/MP4 packet-boundary padding (e.g. 3600.06s on an exact 1:00:00 video)
   const adjustedSec = safeDur > 60 ? Math.max(1, safeDur - 1.5) : safeDur;
   const minutes = Math.max(1, Math.ceil(adjustedSec / 60));
@@ -161,6 +163,6 @@ export function estimateProcessingCredits(
   // First 10 minutes billed per minute; long-form video beyond 10m billed per 10-minute chunk
   const baseCredits =
     minutes <= 10 ? minutes * rate : 10 * rate + Math.ceil((minutes - 10) / 10) * rate;
-  const extraClips = Math.max(0, clipCount - 3) * 2;
+  const extraClips = Math.max(0, numericClipCount - 3) * 2;
   return Math.max(limits.minCreditsPerJob, baseCredits + extraClips);
 }
