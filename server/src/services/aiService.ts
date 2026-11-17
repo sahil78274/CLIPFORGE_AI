@@ -155,11 +155,14 @@ Return JSON with keys:
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       this.modelName
-    )}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`;
+    )}:generateContent`;
 
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': env.GEMINI_API_KEY,
+      },
       body: JSON.stringify({
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
@@ -290,10 +293,12 @@ export async function generateClipMetadataWithGracefulFallback(input: {
   try {
     const metadata = await provider.generateClipMetadata(input);
     return { metadata };
-  } catch (err: any) {
+  } catch {
+    // Provider errors can contain request URLs or headers; never surface them because
+    // authentication material must not leak into job diagnostics or API responses.
     return {
       metadata: buildDeterministicClipMetadata(input),
-      aiNotice: `External AI provider unreachable (${err?.message || 'network restriction'}); used deterministic transcript NLP fallback.`,
+      aiNotice: 'External AI provider request failed; used deterministic transcript NLP fallback.',
     };
   }
 }

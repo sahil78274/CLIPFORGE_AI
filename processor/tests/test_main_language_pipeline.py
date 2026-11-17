@@ -148,11 +148,14 @@ class FullAudioLanguagePipelineTests(unittest.TestCase):
                     return_value={"silenceIntervals": [], "energyTimeline": []},
                 )
             )
-            stack.enter_context(
+            candidate_detection = stack.enter_context(
                 patch(
                     "detect_candidate_moments",
                     return_value={"usedAi": False, "candidates": [clip]},
                 )
+            )
+            stack.enter_context(
+                mock.patch.dict(os.environ, {"GEMINI_API_KEY": "fake-gemini-key-for-tests-only"})
             )
             stack.enter_context(patch("select_unique_clips", return_value=[clip]))
             stack.enter_context(
@@ -204,6 +207,12 @@ class FullAudioLanguagePipelineTests(unittest.TestCase):
         with open(output_json_path, encoding="utf-8") as result_file:
             result = json.load(result_file)
         self.assertEqual(transcribe_mock.call_count, 1)
+        if mode == "full_pipeline":
+            self.assertEqual(candidate_detection.call_count, 1)
+            self.assertEqual(
+                candidate_detection.call_args.kwargs["gemini_api_key"],
+                "fake-gemini-key-for-tests-only",
+            )
         return result, events, transcribe_mock
 
 

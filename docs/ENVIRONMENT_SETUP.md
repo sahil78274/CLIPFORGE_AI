@@ -1,6 +1,6 @@
 # Environment Setup Guide
 
-This guide covers full local workstation setup on **Windows PowerShell**, **macOS**, and **Ubuntu/Debian Linux**, along with every `.env` configuration variable.
+This guide covers full local workstation setup on **Windows PowerShell**, **macOS**, and **Ubuntu/Debian Linux**, along with every `.env` configuration variable. Put the active `.env` in the repository root; the backend resolves it from its module path, so it works when launched with npm workspaces regardless of the shell's current directory. A `server/.env` can fill values missing from the root file.
 
 ---
 
@@ -84,9 +84,9 @@ npm test
 | `FFMPEG_PATH` / `FFPROBE_PATH` | No | *(auto-detected)* | Explicit binary paths; auto-resolves bundled `@ffmpeg-installer` / `@ffprobe-installer` if omitted. |
 | `WHISPER_MODEL_SIZE` | No | `small` | Multilingual Faster-Whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`). Avoid `.en` models for Hindi, Arabic, or multilingual speech. |
 | `WHISPER_MODEL_PATH` | No | *(empty)* | Optional path to pre-downloaded CTranslate2 Faster-Whisper model folder for air-gapped hosts. |
-| `AI_PROVIDER` | No | `gemini` | `gemini`, `openai_compatible`, or `none`. |
-| `GEMINI_API_KEY` | Optional | *(empty)* | Google AI Studio API key. Marked `NOT CONFIGURED` if omitted. |
-| `GEMINI_MODEL` | No | `gemini-2.0-flash` | Gemini model ID for social copy generation. |
+| `AI_PROVIDER` | No | `gemini` | `gemini` or `openai_compatible`; the selected provider is determined when the backend loads its environment. |
+| `GEMINI_API_KEY` | Optional | *(empty)* | Google AI Studio API key. Loaded from the root `.env` and passed to Gemini via an HTTP header; never written into the Python job-input file. Marked `NOT CONFIGURED` if omitted. |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Gemini model ID for social copy and moment scoring. |
 | `RAZORPAY_KEY_ID` / `RAZORPAY_KEY_SECRET` | Optional | *(empty)* | Razorpay INR API keys. Marked `NOT CONFIGURED` if omitted. |
 | `RAZORPAY_WEBHOOK_SECRET` | Optional | *(empty)* | Razorpay webhook signing secret for `/api/v1/payments/webhook`. |
 | `PAYMENT_SANDBOX_SIMULATOR` | No | `true` (dev only) | Enables labelled dev sandbox payment simulator in non-production when live Razorpay keys are absent. |
