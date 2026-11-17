@@ -67,7 +67,7 @@ const videoSchema = new Schema<IVideo>(
     hasAudio: { type: Boolean, default: true },
     thumbnailKey: { type: String },
     transcriptionEngine: { type: String },
-    detectedLanguage: { type: String, default: 'en' },
+    detectedLanguage: { type: String, default: 'und' },
     transcript: { type: [Schema.Types.Mixed] as any, default: [] },
     scenes: { type: [Schema.Types.Mixed] as any, default: [] },
     status: {

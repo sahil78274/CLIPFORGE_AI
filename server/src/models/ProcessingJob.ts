@@ -25,6 +25,8 @@ export interface IProcessingJob extends Document {
     aiProvider: string;
     aiConfigured: boolean;
     whisperStatus: string;
+    detectedLanguage: string;
+    captionsLanguageValidated: boolean;
     ffmpegAvailable: boolean;
     warnings: string[];
   };
@@ -97,6 +99,8 @@ const processingJobSchema = new Schema<IProcessingJob>(
       aiProvider: { type: String, default: 'gemini' },
       aiConfigured: { type: Boolean, default: false },
       whisperStatus: { type: String, default: 'pending' },
+      detectedLanguage: { type: String, default: 'und' },
+      captionsLanguageValidated: { type: Boolean, default: false },
       ffmpegAvailable: { type: Boolean, default: true },
       warnings: { type: [String], default: [] },
     },

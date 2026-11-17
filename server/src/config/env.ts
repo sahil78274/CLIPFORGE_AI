@@ -97,7 +97,7 @@ const envSchema = z.object({
   S3_SECRET_ACCESS_KEY: z.string().optional().default(''),
   S3_PUBLIC_BASE_URL: z.string().optional().default(''),
 
-  WHISPER_MODEL_SIZE: z.string().default('base'),
+  WHISPER_MODEL_SIZE: z.string().default('small'),
   WHISPER_MODEL_PATH: z.string().optional().default(''),
   WHISPER_DEVICE: z.string().default('cpu'),
   WHISPER_COMPUTE_TYPE: z.string().default('int8'),
