@@ -363,13 +363,32 @@ export const ProjectDetailPage: React.FC = () => {
                   <Badge variant="warning">Captions withheld: language not verified</Badge>
                 )}
               <Badge variant={latestJob.diagnostics?.aiConfigured ? 'brand' : 'default'}>
-                AI:{' '}
-                {latestJob.diagnostics?.aiConfigured
-                  ? latestJob.diagnostics.aiProvider
-                  : 'NLP Fallback (AI Key Not Configured)'}
+                AI: {latestJob.diagnostics?.aiProvider || 'provider not checked'}
+                {!latestJob.diagnostics?.aiConfigured && latestJob.status === 'completed'
+                  ? ' (not configured)'
+                  : ''}
               </Badge>
+              {latestJob.diagnostics?.metadataFallbacks?.map((fallback) => (
+                <Badge
+                  key={`${fallback.provider}-${fallback.code}-${fallback.statusCode || 'none'}`}
+                  variant="warning"
+                >
+                  Metadata NLP fallback
+                  {fallback.statusCode ? ` · HTTP ${fallback.statusCode}` : ''}
+                </Badge>
+              ))}
             </div>
           </div>
+
+          {latestJob.diagnostics?.metadataFallbacks?.map((fallback) => (
+            <div
+              key={`${fallback.provider}-${fallback.code}-${fallback.statusCode || 'none'}-message`}
+              className="rounded-xl border border-amber-500/20 bg-amber-500/[0.06] p-3 text-xs text-amber-200"
+            >
+              <strong>Metadata fallback:</strong> {fallback.message}
+              {fallback.affectedClips > 1 && ` Affected ${fallback.affectedClips} clips.`}
+            </div>
+          ))}
 
           {latestJob.error && (
             <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/25 text-xs text-red-300">

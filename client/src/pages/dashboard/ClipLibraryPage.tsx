@@ -482,13 +482,15 @@ export const ClipLibraryPage: React.FC = () => {
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-white/[0.08]">
               <Badge
                 variant={
-                  metadataClip.metadata.generatedBy === 'deterministic_nlp' ? 'default' : 'brand'
+                  metadataClip.metadata.generatedBy === 'deterministic_nlp' ? 'warning' : 'brand'
                 }
               >
                 Generator:{' '}
                 {metadataClip.metadata.generatedBy === 'deterministic_nlp'
-                  ? 'Transcript NLP (Configure GEMINI_API_KEY for LLM mode)'
-                  : metadataClip.metadata.generatedBy}
+                  ? 'Transcript NLP fallback'
+                  : metadataClip.metadata.generatedBy === 'openai_compatible'
+                    ? 'OpenAI-compatible'
+                    : 'Gemini'}
               </Badge>
               <Button
                 variant="secondary"
@@ -500,6 +502,13 @@ export const ClipLibraryPage: React.FC = () => {
                 Regenerate Metadata
               </Button>
             </div>
+
+            {metadataClip.metadata.fallbackReason && (
+              <div className="rounded-xl border border-amber-500/25 bg-amber-500/[0.08] p-3 text-xs text-amber-200">
+                <strong>Why NLP fallback was used:</strong>{' '}
+                {metadataClip.metadata.fallbackReason.message}
+              </div>
+            )}
 
             <div className="space-y-2">
               <label className="text-xs font-semibold text-zinc-300">3 Suggested Title Options</label>
@@ -545,6 +554,35 @@ export const ClipLibraryPage: React.FC = () => {
                   setMetadataClip({
                     ...metadataClip,
                     metadata: { ...metadataClip.metadata, thumbnailText: e.target.value },
+                  })
+                }
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <Input
+                label="Category"
+                value={metadataClip.metadata.category || ''}
+                onChange={(e) =>
+                  setMetadataClip({
+                    ...metadataClip,
+                    metadata: { ...metadataClip.metadata, category: e.target.value },
+                  })
+                }
+              />
+              <Input
+                label="Keywords (comma separated)"
+                value={(metadataClip.metadata.keywords || []).join(', ')}
+                onChange={(e) =>
+                  setMetadataClip({
+                    ...metadataClip,
+                    metadata: {
+                      ...metadataClip.metadata,
+                      keywords: e.target.value
+                        .split(',')
+                        .map((keyword) => keyword.trim())
+                        .filter(Boolean),
+                    },
                   })
                 }
               />

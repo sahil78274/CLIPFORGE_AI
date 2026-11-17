@@ -1,6 +1,21 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 import { DEFAULT_CAPTION_STYLE, type AspectRatio, type CaptionStyleConfig } from '@clipforge/shared';
 
+export type MetadataFallbackCode =
+  | 'not_configured'
+  | 'http_error'
+  | 'network_error'
+  | 'malformed_response'
+  | 'incomplete_response'
+  | 'provider_error';
+
+export interface IMetadataFallbackReason {
+  provider: 'gemini' | 'openai_compatible';
+  code: MetadataFallbackCode;
+  message: string;
+  statusCode?: number;
+}
+
 export interface IClipMetadata {
   titleOptions: string[];
   descriptions: {
@@ -20,6 +35,7 @@ export interface IClipMetadata {
     windowsByPlatform?: Record<string, string>;
   };
   generatedBy: 'gemini' | 'openai_compatible' | 'deterministic_nlp';
+  fallbackReason?: IMetadataFallbackReason;
 }
 
 export interface IClip extends Document {
