@@ -24,6 +24,7 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../utils/errors';
+import { assertClipCountWithinSystemLimit } from '../processingSettingsService';
 import { getGoogleDriveMediaProvider } from './GoogleDriveMediaProvider';
 import { getGoogleDriveOAuthService } from './GoogleDriveOAuthService';
 import type {
@@ -236,10 +237,8 @@ export class GoogleDriveImportService {
 
     const cfg = await getOrCreateSystemConfig();
     const maxDurationSec = Math.min(env.MAX_VIDEO_DURATION_SEC, cfg.maxVideoDurationSec || 36000);
-    const settings: ProjectProcessingSettings = {
-      ...params.settings,
-      clipCount: Math.min(params.settings.clipCount, cfg.maxClipsPerJob || 10),
-    };
+    const settings: ProjectProcessingSettings = { ...params.settings };
+    assertClipCountWithinSystemLimit(settings.clipCount, cfg.maxClipsPerJob);
     const estimatedDurationSec = meta.durationSec ?? 600;
     const chunkDurationSec =
       settings.chunkDurationSec || cfg.chunkDurationSec || env.VIDEO_CHUNK_DURATION_SEC;

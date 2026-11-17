@@ -41,6 +41,7 @@ export interface ISystemConfig extends Document {
   minCreditsPerJob: number;
   maxUploadSizeMb: number;
   uploadLimitMigrated: boolean;
+  clipCountLimitMigrated: boolean;
   maxVideoDurationSec: number;
   chunkDurationSec: number;
   chunkOverlapSec: number;
@@ -60,10 +61,17 @@ const systemConfigSchema = new Schema<ISystemConfig>(
     minCreditsPerJob: { type: Number, default: 10 },
     maxUploadSizeMb: { type: Number, default: MAX_VIDEO_UPLOAD_SIZE_MB },
     uploadLimitMigrated: { type: Boolean, default: false },
+    clipCountLimitMigrated: { type: Boolean, default: false },
     maxVideoDurationSec: { type: Number, default: 36000 },
     chunkDurationSec: { type: Number, default: 600 },
     chunkOverlapSec: { type: Number, default: 5 },
-    maxClipsPerJob: { type: Number, default: 10 },
+    maxClipsPerJob: {
+      type: Number,
+      default: 15,
+      min: 1,
+      max: 20,
+      validate: { validator: Number.isInteger, message: 'Clip limit must be an integer' },
+    },
     supportedPlatforms: {
       type: Schema.Types.Mixed,
       default: () => ({

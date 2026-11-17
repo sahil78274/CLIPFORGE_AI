@@ -127,7 +127,7 @@ Input.displayName = 'Input';
 export interface SelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   label?: string;
   error?: string;
-  options: Array<{ value: string; label: string }>;
+  options: Array<{ value: string; label: string; disabled?: boolean }>;
 }
 
 export const Select: React.FC<SelectProps> = ({
@@ -155,7 +155,12 @@ export const Select: React.FC<SelectProps> = ({
         {...props}
       >
         {options.map((o) => (
-          <option key={o.value} value={o.value} className="bg-[#15151B] text-zinc-100">
+          <option
+            key={o.value}
+            value={o.value}
+            disabled={o.disabled}
+            className="bg-[#15151B] text-zinc-100"
+          >
             {o.label}
           </option>
         ))}

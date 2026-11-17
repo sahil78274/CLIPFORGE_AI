@@ -16,7 +16,7 @@ from processor.video_editor.subtitle_generator import generate_ass_subtitles
 from processor.clip_detection import moment_detector
 from processor.clip_detection.moment_detector import detect_candidate_moments
 from processor.clip_detection.clip_selector import select_unique_clips
-from processor.main import _audio_language_sample_windows, _protect_caption_word_boundaries
+from processor.main import _audio_language_sample_windows, _protect_spoken_word_boundaries
 
 
 SAMPLE_UTTERANCES = {
@@ -438,7 +438,7 @@ class SpeechSafeHighlightTests(unittest.TestCase):
                 ],
             }
         ]
-        safe_start, safe_end = _protect_caption_word_boundaries(
+        safe_start, safe_end = _protect_spoken_word_boundaries(
             clip_start=10.3,
             clip_end=19.6,
             candidate_start=10.0,
@@ -539,7 +539,13 @@ class SpeechSafeHighlightTests(unittest.TestCase):
         ]
         with mock.patch(
             "processor.clip_detection.moment_detector._try_gemini_moment_scoring",
-            return_value=[{"startSec": 10.5, "endSec": 18.7, "title": "Complete thought"}],
+            return_value=[
+                None,
+                "not an AI moment object",
+                {"startSec": "invalid", "endSec": 18.7},
+                {"startSec": float("nan"), "endSec": 18.7},
+                {"startSec": 10.5, "endSec": 18.7, "title": "Complete thought"},
+            ],
         ):
             result = detect_candidate_moments(
                 segments=segments,
@@ -556,21 +562,244 @@ class SpeechSafeHighlightTests(unittest.TestCase):
         self.assertIn("complete first part", ai_candidate["transcript"])
         self.assertIn("final complete sentence", ai_candidate["transcript"])
 
-    def test_selector_uses_transcript_boundaries_for_missing_slots(self):
+    def test_selector_returns_only_complete_unique_high_quality_moments(self):
+        candidates = [
+            {
+                "startSec": 2.0,
+                "endSec": 22.0,
+                "durationSec": 20.0,
+                "transcript": "Here is a useful idea that changed how we solve problems.",
+                "engagementScore": 90,
+                "completeThought": True,
+                "audioEnergy": 0.12,
+                "visualScore": 0.8,
+            },
+            {
+                "startSec": 30.0,
+                "endSec": 50.0,
+                "durationSec": 20.0,
+                "transcript": "This second explanation shows why the method saves more time.",
+                "engagementScore": 82,
+                "completeThought": True,
+                "audioEnergy": 0.09,
+                "visualScore": 0.6,
+            },
+            {
+                "startSec": 58.0,
+                "endSec": 78.0,
+                "durationSec": 20.0,
+                "transcript": "Here is a useful idea that changed how we solve problems.",
+                "engagementScore": 95,
+                "completeThought": True,
+            },
+            {
+                "startSec": 2.0,
+                "endSec": 22.0,
+                "durationSec": 20.0,
+                "transcript": "This is a complete sentence but the score is weak.",
+                "engagementScore": 60,
+                "completeThought": True,
+            },
+            {
+                "startSec": 80.0,
+                "endSec": 100.0,
+                "durationSec": 20.0,
+                "transcript": "A useful explanation that is mostly silent throughout.",
+                "engagementScore": 92,
+                "completeThought": True,
+            },
+            {
+                "startSec": 82.0,
+                "endSec": 102.0,
+                "durationSec": 20.0,
+                "transcript": "This high scoring moment ends in an unfinished thought",
+                "engagementScore": 96,
+                "completeThought": False,
+            },
+        ]
+        selected = select_unique_clips(
+            candidates=candidates,
+            desired_count=5,
+            duration_sec=110,
+            min_dur=15,
+            max_dur=25,
+            silence_intervals=[{"start": 80.0, "end": 100.0}],
+        )
+
+        self.assertEqual(len(selected), 2)
+        self.assertEqual([candidate["startSec"] for candidate in selected], [30.0, 58.0])
+        self.assertTrue(all(candidate["completeThought"] for candidate in selected))
+
+    def test_selector_ranks_equal_scores_with_audio_and_visual_context(self):
+        low_context = {
+            "startSec": 2.0,
+            "endSec": 22.0,
+            "durationSec": 20.0,
+            "transcript": "A complete thought with a useful point about our process.",
+            "engagementScore": 80,
+            "completeThought": True,
+            "audioEnergy": 0.01,
+            "visualScore": 0.2,
+        }
+        high_context = {
+            "startSec": 30.0,
+            "endSec": 50.0,
+            "durationSec": 20.0,
+            "transcript": "Another complete thought explaining a practical strategy for teams.",
+            "engagementScore": 80,
+            "completeThought": True,
+            "audioEnergy": 0.14,
+            "visualScore": 0.9,
+        }
+        selected = select_unique_clips(
+            candidates=[low_context, high_context],
+            desired_count=1,
+            duration_sec=60,
+            min_dur=15,
+            max_dur=25,
+        )
+        self.assertEqual(len(selected), 1)
+        self.assertEqual(selected[0]["startSec"], 30.0)
+
+    def test_moment_detector_does_not_invent_visual_only_fallbacks(self):
+        result = detect_candidate_moments(
+            segments=[],
+            scenes=[
+                {
+                    "start": 0.0,
+                    "end": 60.0,
+                    "score": 0.95,
+                    "motionScore": 0.9,
+                    "hasFace": True,
+                    "analysisAvailable": True,
+                }
+            ],
+            energy_timeline=[{"t": 30.0, "rms": 0.4}],
+            duration_sec=60,
+            min_dur=15,
+            max_dur=30,
+            clip_count=3,
+        )
+        self.assertEqual(result["candidates"], [])
+
+    def test_unverified_transcript_hints_are_internal_and_need_strong_quality_signals(self):
+        embedded_segments = [
+            {
+                "id": 0,
+                "start": 1.0,
+                "end": 10.0,
+                "text": "The important lesson is to remove friction before adding features.",
+                "words": [],
+                "captionable": False,
+                "languageValidated": False,
+                "unverified": True,
+            },
+            {
+                "id": 1,
+                "start": 10.4,
+                "end": 20.0,
+                "text": "Teams that simplify onboarding retain more customers over time.",
+                "words": [],
+                "captionable": False,
+                "languageValidated": False,
+                "unverified": True,
+            },
+        ]
+        scenes = [
+            {
+                "start": 0.0,
+                "end": 30.0,
+                "score": 0.9,
+                "motionScore": 0.6,
+                "hasFace": True,
+                "analysisAvailable": True,
+            }
+        ]
+        energy = [{"t": 5.0, "rms": 0.12}, {"t": 15.0, "rms": 0.12}]
+
+        with mock.patch.object(
+            moment_detector, "_try_gemini_moment_scoring", return_value=[]
+        ) as score_with_ai:
+            result = detect_candidate_moments(
+                segments=embedded_segments,
+                scenes=scenes,
+                energy_timeline=energy,
+                duration_sec=60.0,
+                min_dur=15.0,
+                max_dur=30.0,
+                clip_count=1,
+            )
+        score_with_ai.assert_not_called()
+        self.assertFalse(result["usedAi"])
+        self.assertTrue(result["candidates"])
+        candidate = result["candidates"][0]
+        self.assertIn("important lesson", candidate["transcript"])
+        self.assertFalse(candidate["transcriptVerified"])
+        self.assertTrue(candidate["completeThought"])
+
+        selected = select_unique_clips(
+            candidates=[candidate],
+            desired_count=1,
+            duration_sec=60.0,
+            min_dur=15.0,
+            max_dur=30.0,
+            segments=embedded_segments,
+        )
+        self.assertEqual(len(selected), 1)
+
+        low_signal = detect_candidate_moments(
+            segments=embedded_segments,
+            scenes=[],
+            energy_timeline=[],
+            duration_sec=60.0,
+            min_dur=15.0,
+            max_dur=30.0,
+            clip_count=1,
+        )
+        self.assertEqual(
+            select_unique_clips(
+                candidates=low_signal["candidates"],
+                desired_count=1,
+                duration_sec=60.0,
+                min_dur=15.0,
+                max_dur=30.0,
+                segments=embedded_segments,
+            ),
+            [],
+        )
+
+    def test_selector_rejects_borderline_unverified_transcript_candidates(self):
+        candidate = {
+            "startSec": 1.0,
+            "endSec": 21.0,
+            "durationSec": 20.0,
+            "transcript": "A complete idea with enough words to analyze.",
+            "engagementScore": 69,
+            "completeThought": True,
+            "transcriptVerified": False,
+        }
+        selected = select_unique_clips(
+            candidates=[candidate],
+            desired_count=1,
+            duration_sec=60.0,
+            min_dur=15.0,
+            max_dur=30.0,
+        )
+        self.assertEqual(selected, [])
+
+    def test_selector_does_not_fill_missing_slots_from_transcript_windows(self):
         segments = [
             {
                 "start": 2.0,
                 "end": 11.0,
                 "text": "The first complete sentence ends here.",
                 "languageValidated": True,
-                "words": [{"word": "here.", "start": 10.5, "end": 10.9}],
             },
             {
                 "start": 11.4,
                 "end": 22.0,
                 "text": "The next sentence finishes with a useful conclusion.",
                 "languageValidated": True,
-                "words": [{"word": "conclusion.", "start": 21.4, "end": 21.9}],
             },
         ]
         selected = select_unique_clips(
@@ -581,10 +810,7 @@ class SpeechSafeHighlightTests(unittest.TestCase):
             max_dur=25,
             segments=segments,
         )
-        self.assertEqual(len(selected), 1)
-        self.assertLess(selected[0]["startSec"], 2.0)
-        self.assertGreater(selected[0]["endSec"], 22.0)
-        self.assertIn("useful conclusion", selected[0]["transcript"])
+        self.assertEqual(selected, [])
 
 
 if __name__ == "__main__":

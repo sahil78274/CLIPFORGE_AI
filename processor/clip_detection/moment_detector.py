@@ -1,4 +1,5 @@
 import json
+import math
 import urllib.request
 from typing import Any, Dict, List
 
@@ -32,14 +33,26 @@ def _ends_sentence(text: str) -> bool:
     return bool((text or "").rstrip().endswith((".", "!", "?", "؟", "۔", "।", "॥", "…")))
 
 
-def _trusted_text_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [
-        segment
-        for segment in segments
-        if str(segment.get("text") or "").strip()
+def _is_verified_text_segment(segment: Dict[str, Any]) -> bool:
+    return bool(
+        str(segment.get("text") or "").strip()
         and segment.get("languageValidated", True)
         and not segment.get("unverified", False)
         and not segment.get("synthetic", False)
+    )
+
+
+def _trusted_text_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Text safe to send to a moment-scoring provider as a verified transcript."""
+    return [segment for segment in segments if _is_verified_text_segment(segment)]
+
+
+def _analysis_text_segments(segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Text that can inform internal ranking without being treated as verified speech."""
+    return [
+        segment
+        for segment in segments
+        if str(segment.get("text") or "").strip() and not segment.get("synthetic", False)
     ]
 
 
@@ -116,6 +129,89 @@ def _snap_to_spoken_boundaries(
     # A short breath of context protects the first and last phonemes without
     # moving the candidate onto an unrelated neighboring sentence.
     return max(0.0, start_edge - 0.12), min(duration_sec, end_edge + 0.18)
+
+
+def _has_complete_speech_boundaries(
+    start_sec: float,
+    end_sec: float,
+    segments: List[Dict[str, Any]],
+    duration_sec: float,
+) -> bool:
+    """Require a natural start and end: sentence boundary, pause, or media end."""
+    ordered = sorted(
+        segments,
+        key=lambda segment: (float(segment.get("start", 0.0)), float(segment.get("end", 0.0))),
+    )
+    overlapping_indices = [
+        index
+        for index, segment in enumerate(ordered)
+        if float(segment.get("end", 0.0)) > start_sec
+        and float(segment.get("start", 0.0)) < end_sec
+    ]
+    if not overlapping_indices:
+        return False
+
+    first_index = overlapping_indices[0]
+    last_index = overlapping_indices[-1]
+    first = ordered[first_index]
+    last = ordered[last_index]
+    starts_cleanly = first_index == 0
+    if first_index > 0:
+        previous = ordered[first_index - 1]
+        pause = float(first.get("start", 0.0)) - float(previous.get("end", 0.0))
+        starts_cleanly = _ends_sentence(str(previous.get("text") or "")) or pause >= 0.8
+
+    ends_cleanly = _ends_sentence(str(last.get("text") or ""))
+    if last_index + 1 < len(ordered):
+        following = ordered[last_index + 1]
+        pause = float(following.get("start", end_sec)) - float(last.get("end", end_sec))
+        ends_cleanly = ends_cleanly or pause >= 0.8
+    else:
+        ends_cleanly = ends_cleanly or end_sec >= duration_sec - 1.0
+
+    return starts_cleanly and ends_cleanly
+
+
+def _moment_context_features(
+    start_sec: float,
+    end_sec: float,
+    scenes: List[Dict[str, Any]],
+    energy_timeline: List[Dict[str, float]],
+) -> Dict[str, Any]:
+    energy_values = [
+        float(point.get("rms", 0.0))
+        for point in energy_timeline
+        if start_sec <= float(point.get("t", -1.0)) <= end_sec
+    ]
+    mean_rms = sum(energy_values) / len(energy_values) if energy_values else 0.0
+    overlapping_scenes = [
+        scene
+        for scene in scenes
+        if scene.get("analysisAvailable", True)
+        and float(scene.get("end", 0.0)) > start_sec
+        and float(scene.get("start", 0.0)) < end_sec
+    ]
+    has_face = any(scene.get("hasFace") for scene in overlapping_scenes)
+    motion_bonus = (
+        sum(float(scene.get("motionScore", 0.0)) for scene in overlapping_scenes)
+        / len(overlapping_scenes)
+        * 10.0
+        if overlapping_scenes
+        else 0.0
+    )
+    visual_score = (
+        sum(float(scene.get("score", 0.0)) for scene in overlapping_scenes)
+        / len(overlapping_scenes)
+        if overlapping_scenes
+        else 0.0
+    )
+    return {
+        "audioEnergy": round(mean_rms, 5),
+        "visualScore": round(visual_score, 3),
+        "energyBonus": min(15.0, mean_rms * 180.0),
+        "motionBonus": motion_bonus,
+        "hasFace": has_face,
+    }
 
 
 def _build_moment_prompt(
@@ -258,7 +354,12 @@ def detect_candidate_moments(
     if effective_max < effective_min:
         effective_max = min(duration_sec, max(effective_min, window_span))
 
-    segments_for_moments = _split_long_segments_for_moments(segments, effective_max)
+    # Unverified embedded subtitles or fallback ASR may inform internal moment
+    # ranking, but only globally verified transcript segments are sent to a
+    # scoring provider or described as verified speech.
+    segments_for_moments = _split_long_segments_for_moments(
+        _analysis_text_segments(segments), effective_max
+    )
     trusted_segments = _trusted_text_segments(segments_for_moments)
     if not trusted_segments:
         ai_candidates: List[Dict[str, Any]] = []
@@ -282,8 +383,18 @@ def detect_candidate_moments(
 
     if used_ai:
         for item in ai_candidates:
-            proposed_start = max(0.0, float(item.get("startSec", window_start_sec)))
-            proposed_end = min(duration_sec, float(item.get("endSec", 0.0)))
+            if not isinstance(item, dict):
+                continue
+            try:
+                raw_start = float(item.get("startSec", window_start_sec))
+                raw_end = float(item.get("endSec", 0.0))
+                raw_score = int(item.get("engagementScore", 82))
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if not all(math.isfinite(value) for value in (raw_start, raw_end, float(raw_score))):
+                continue
+            proposed_start = max(0.0, raw_start)
+            proposed_end = min(duration_sec, raw_end)
             if proposed_end <= proposed_start:
                 continue
             aligned = _snap_to_spoken_boundaries(
@@ -294,11 +405,20 @@ def detect_candidate_moments(
             s_t, e_t = aligned
             if e_t - s_t < 2.5 or e_t - s_t > effective_max * 1.35:
                 continue
+            if not _has_complete_speech_boundaries(s_t, e_t, trusted_segments, duration_sec):
+                continue
             seg_texts = [
                 str(seg.get("text") or "").strip()
                 for seg in trusted_segments
                 if float(seg["end"]) > s_t and float(seg["start"]) < e_t
             ]
+            context = _moment_context_features(s_t, e_t, scenes, energy_timeline)
+            context_boost = min(
+                8,
+                int(round(context["energyBonus"] * 0.2 + context["motionBonus"] * 0.2))
+                + (2 if context["hasFace"] else 0),
+            )
+            base_score = max(45, min(96, raw_score))
             candidates.append(
                 {
                     "startSec": round(s_t, 2),
@@ -308,13 +428,16 @@ def detect_candidate_moments(
                     "title": str(item.get("title") or "AI Selected Highlight"),
                     "category": str(item.get("category") or "insight"),
                     "reason": str(item.get("reason") or "AI-selected complete engaging moment."),
-                    "engagementScore": max(45, min(96, int(item.get("engagementScore", 82)))),
+                    "engagementScore": min(96, base_score + context_boost),
+                    "completeThought": True,
+                    "transcriptVerified": True,
+                    "audioEnergy": context["audioEnergy"],
+                    "visualScore": context["visualScore"],
                 }
             )
 
-    # Deterministic sentence-boundary + acoustic + visual moment scoring. Prefer a
-    # complete sentence; if the speaker does not pause, use the longest full-segment
-    # window that fits rather than cutting at the first duration threshold.
+    # Deterministic sentence-boundary + acoustic + visual moment scoring. Only
+    # natural sentence/pause endings are eligible; incomplete windows are not promoted.
     n_segs = len(segments_for_moments)
     for i in range(n_segs):
         current = segments_for_moments[i]
@@ -342,6 +465,7 @@ def detect_candidate_moments(
         )
         candidate_options: List[tuple] = []
         gathered_texts: List[str] = []
+        gathered_segments: List[Dict[str, Any]] = []
 
         for j in range(i, n_segs):
             last = segments_for_moments[j]
@@ -352,13 +476,8 @@ def detect_candidate_moments(
             if span > effective_max * 1.35:
                 break
 
-            gathered_texts.append(
-                str(last.get("text") or "")
-                if last.get("languageValidated", True)
-                and not last.get("unverified", False)
-                and not last.get("synthetic", False)
-                else ""
-            )
+            gathered_texts.append(str(last.get("text") or "").strip())
+            gathered_segments.append(last)
             full_text = " ".join(text for text in gathered_texts if text).strip()
             if span < effective_min and j < n_segs - 1:
                 continue
@@ -383,24 +502,29 @@ def detect_candidate_moments(
                 j + 1 < n_segs and next_pause >= 0.8
             ) or (j == n_segs - 1 and end_t >= duration_sec - 1.0)
 
-            e_vals = [x["rms"] for x in energy_timeline if start_t <= x["t"] <= end_t]
-            mean_rms = sum(e_vals) / len(e_vals) if e_vals else 0.03
-            energy_bonus = min(15.0, mean_rms * 180.0)
-
-            ov_scenes = [sc for sc in scenes if sc["end"] > candidate_start and sc["start"] < candidate_end]
-            has_face = any(sc.get("hasFace") for sc in ov_scenes)
-            motion_bonus = (
-                sum(sc.get("motionScore", 0.2) for sc in ov_scenes) / len(ov_scenes) * 10.0
-                if ov_scenes
-                else 3.0
-            )
+            context = _moment_context_features(candidate_start, candidate_end, scenes, energy_timeline)
+            energy_bonus = float(context["energyBonus"])
+            motion_bonus = float(context["motionBonus"])
+            has_face = bool(context["hasFace"])
 
             category = _classify_text(full_text)
+            transcript_verified = bool(gathered_segments) and all(
+                _is_verified_text_segment(segment) for segment in gathered_segments
+            )
             sentence_bonus = 8.0 if ends_cleanly else 0.0
             hook_bonus = 7.0 if ("?" in full_text[:80] or "؟" in full_text[:80] or category in ("hook", "surprising")) else 3.0
             face_bonus = 6.0 if has_face else 0.0
+            verification_adjustment = 4.0 if transcript_verified else -4.0
             raw_score = int(
-                round(54.0 + energy_bonus + motion_bonus + sentence_bonus + hook_bonus + face_bonus)
+                round(
+                    54.0
+                    + energy_bonus
+                    + motion_bonus
+                    + sentence_bonus
+                    + hook_bonus
+                    + face_bonus
+                    + verification_adjustment
+                )
             )
             score = max(50, min(95, raw_score))
 
@@ -427,6 +551,10 @@ def detect_candidate_moments(
                         "category": category,
                         "reason": ", ".join(reason_parts).capitalize() + ".",
                         "engagementScore": score,
+                        "completeThought": ends_cleanly,
+                        "transcriptVerified": transcript_verified,
+                        "audioEnergy": context["audioEnergy"],
+                        "visualScore": context["visualScore"],
                     },
                     ends_cleanly,
                 )
@@ -434,52 +562,9 @@ def detect_candidate_moments(
             if ends_cleanly:
                 break
 
-        if candidate_options:
-            # The loop stops at the first clean ending. If punctuation is absent,
-            # the last option is the widest complete segment window under the cap.
+        # Do not fall back to an incomplete speech window just to fill candidates.
+        if candidate_options and candidate_options[-1][1]:
             candidates.append(candidate_options[-1][0])
-
-    if not candidates and window_span >= 1.5:
-        if segments_for_moments:
-            ordered = sorted(segments_for_moments, key=lambda segment: float(segment.get("start", 0.0)))
-            first = ordered[0]
-            chosen = [first]
-            for segment in ordered[1:]:
-                if float(segment.get("end", 0.0)) - float(first.get("start", 0.0)) > effective_max:
-                    break
-                chosen.append(segment)
-                if float(segment.get("end", 0.0)) - float(first.get("start", 0.0)) >= effective_min and _ends_sentence(
-                    str(segment.get("text") or "")
-                ):
-                    break
-            last = chosen[-1]
-            fb_start = max(0.0, float(first.get("start", window_start_sec)) - 0.12)
-            fb_end = min(duration_sec, float(last.get("end", fb_start)) + 0.18)
-            full_txt = " ".join(
-                str(segment.get("text") or "").strip()
-                for segment in chosen
-                if segment.get("languageValidated", True)
-                and not segment.get("unverified", False)
-                and not segment.get("synthetic", False)
-            ).strip()
-        else:
-            # With no speech boundaries available, this remains a visual-only fallback.
-            fb_start = max(0.0, window_start_sec)
-            fb_end = min(duration_sec, fb_start + min(effective_max, window_span))
-            full_txt = ""
-        if 1.5 <= fb_end - fb_start <= effective_max * 1.35:
-            candidates.append(
-                {
-                    "startSec": round(fb_start, 2),
-                    "endSec": round(fb_end, 2),
-                    "durationSec": round(fb_end - fb_start, 2),
-                    "transcript": full_txt,
-                    "title": f"Highlight ({int(fb_start // 60)}m)",
-                    "category": "insight",
-                    "reason": "Complete speech-aligned highlight window.",
-                    "engagementScore": 70,
-                }
-            )
 
     # Keep top candidates per chunk so checkpoint files remain compact even across 60+ chunks
     candidates.sort(key=lambda c: (c.get("engagementScore", 0), c.get("durationSec", 0)), reverse=True)

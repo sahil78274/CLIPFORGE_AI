@@ -1,6 +1,6 @@
 import os
 import subprocess
-from typing import List, Optional
+from typing import List
 
 
 def render_single_clip(
@@ -12,30 +12,13 @@ def render_single_clip(
     start_sec: float,
     duration_sec: float,
     video_filter_base: str,
-    has_ass_file: bool,
     has_source_audio: bool,
-    audio_filter_chain: str,
-    ambient_bed_path: Optional[str],
 ) -> None:
+    """Render a reframed clip without captions, text overlays, or audio alterations."""
     os.makedirs(clip_work_dir, exist_ok=True)
     os.makedirs(os.path.dirname(output_mp4_path), exist_ok=True)
 
-    fade_out_start = max(0.0, round(duration_sec - 0.28, 2))
-    vf_parts: List[str] = [video_filter_base]
-
-    if has_ass_file:
-        fonts_dir = "/usr/share/fonts/truetype/dejavu"
-        if os.path.isdir(fonts_dir):
-            vf_parts.append(f"ass=captions.ass:fontsdir={fonts_dir}")
-        else:
-            vf_parts.append("ass=captions.ass")
-
-    vf_parts.append("fade=t=in:st=0:d=0.22")
-    if fade_out_start > 0.3:
-        vf_parts.append(f"fade=t=out:st={fade_out_start}:d=0.28")
-    vf_parts.append("format=yuv420p")
-    vf_full = ",".join(vf_parts)
-
+    vf_full = f"{video_filter_base},format=yuv420p"
     cmd: List[str] = [
         ffmpeg_path,
         "-y",
@@ -47,32 +30,11 @@ def render_single_clip(
         source_path,
     ]
 
-    if ambient_bed_path and os.path.isfile(ambient_bed_path):
-        cmd.extend(["-i", ambient_bed_path])
-
-    if has_source_audio and ambient_bed_path and os.path.isfile(ambient_bed_path):
-        filter_complex = (
-            f"[0:v]{vf_full}[vout];"
-            f"[0:a]{audio_filter_chain}[voice];"
-            f"[1:a]atrim=0:{duration_sec:.3f},asetpts=PTS-STARTPTS[bed];"
-            f"[voice][bed]amix=inputs=2:duration=first:dropout_transition=1[aout]"
-        )
-        cmd.extend(
-            [
-                "-filter_complex",
-                filter_complex,
-                "-map",
-                "[vout]",
-                "-map",
-                "[aout]",
-            ]
-        )
-    elif has_source_audio:
-        cmd.extend(["-vf", vf_full, "-af", audio_filter_chain, "-map", "0:v:0", "-map", "0:a:0"])
-    elif ambient_bed_path and os.path.isfile(ambient_bed_path):
-        cmd.extend(["-vf", vf_full, "-map", "0:v:0", "-map", "1:a:0", "-shortest"])
+    if has_source_audio:
+        # Map every source audio stream without filtering, mixing, or replacing it.
+        cmd.extend(["-vf", vf_full, "-map", "0:v:0", "-map", "0:a?"])
     else:
-        # Source video has no audio: attach clean silent AAC track for universal player compatibility
+        # Keep silent sources playable without inventing an audio track from other media.
         cmd.extend(
             [
                 "-f",
@@ -121,7 +83,7 @@ def render_single_clip(
         err_tail = (proc.stderr or "")[-500:]
         raise RuntimeError(f"FFmpeg clip rendering failed: {err_tail}")
 
-    # Render representative JPEG thumbnail from rendered clip at 25% into clip
+    # Render a representative JPEG thumbnail from the rendered clip at 25% into it.
     thumb_t = max(0.1, round(duration_sec * 0.25, 2))
     thumb_proc = subprocess.run(
         [
@@ -143,7 +105,7 @@ def render_single_clip(
         check=False,
     )
     if thumb_proc.returncode != 0:
-        # Fallback to frame 0
+        # Fall back to frame zero if seeking to the representative frame failed.
         subprocess.run(
             [
                 ffmpeg_path,

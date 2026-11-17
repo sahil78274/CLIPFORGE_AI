@@ -25,6 +25,7 @@ def detect_window_scenes_and_faces(
                 "motionScore": 0.3,
                 "hasFace": False,
                 "faceCenterX": 0.5,
+                "analysisAvailable": False,
             }
         ]
 
@@ -139,6 +140,7 @@ def detect_window_scenes_and_faces(
                 "motionScore": round(motion_avg, 3),
                 "hasFace": has_face,
                 "faceCenterX": round(center_x, 3),
+                "analysisAvailable": bool(window_samples),
             }
         )
 
@@ -151,6 +153,7 @@ def detect_window_scenes_and_faces(
                 "motionScore": 0.25,
                 "hasFace": False,
                 "faceCenterX": 0.5,
+                "analysisAvailable": False,
             }
         )
     return scenes

@@ -4,7 +4,6 @@ import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import {
   AlertTriangle,
-  Captions,
   CheckCircle2,
   Clock,
   Cloud,
@@ -23,17 +22,13 @@ import {
   Sparkles,
   StopCircle,
   Upload,
-  Volume2,
   X,
   Youtube,
 } from 'lucide-react';
 import {
   ASPECT_RATIOS,
-  CAPTION_ANIMATIONS,
-  CAPTION_POSITIONS,
   DEFAULT_PROCESSING_SETTINGS,
   DURATION_PRESETS,
-  EDITING_INTENSITIES,
   PIPELINE_STAGES,
   PIPELINE_STAGE_LABELS,
   estimateProcessingCredits,
@@ -46,7 +41,6 @@ import {
   Input,
   ProgressBar,
   Select,
-  Switch,
 } from '../../components/ui';
 import { api } from '../../services/api';
 import { useAuthStore } from '../../stores/authStore';
@@ -137,6 +131,7 @@ export const CreateClipsPage: React.FC = () => {
 
   // Processing & editing settings
   const [settings, setSettings] = useState<ProjectProcessingSettings>(DEFAULT_PROCESSING_SETTINGS);
+  const [customClipCountSelected, setCustomClipCountSelected] = useState(false);
   const [detectedDurationSec, setDetectedDurationSec] = useState<number>(60);
 
   const capsQuery = useQuery({
@@ -727,22 +722,25 @@ export const CreateClipsPage: React.FC = () => {
     }
   };
 
-  const updateCaption = <K extends keyof ProjectProcessingSettings['captionStyle']>(
-    key: K,
-    val: ProjectProcessingSettings['captionStyle'][K]
-  ) => {
-    setSettings((prev) => ({
-      ...prev,
-      captionStyle: {
-        ...prev.captionStyle,
-        [key]: val,
-      },
-    }));
-  };
-
   const liveJob = liveJobQuery.data?.job;
   const generatedClips = liveProjectQuery.data?.clips || [];
   const activeStageIdx = liveJob ? PIPELINE_STAGES.indexOf(liveJob.stage as any) : -1;
+  const systemClipLimit = Math.max(
+    1,
+    Math.min(20, capsQuery.data?.limits.maxClipsPerJob ?? 15)
+  );
+  const standardClipCounts = [3, 5, 10, 15];
+  const clipCountChoice =
+    customClipCountSelected || !standardClipCounts.includes(settings.clipCount)
+      ? 'custom'
+      : String(settings.clipCount);
+
+  useEffect(() => {
+    if (!capsQuery.data || settings.clipCount <= systemClipLimit) return;
+    setSettings((prev) =>
+      prev.clipCount > systemClipLimit ? { ...prev, clipCount: systemClipLimit } : prev
+    );
+  }, [capsQuery.data, settings.clipCount, systemClipLimit]);
 
   return (
     <div className="space-y-8">
@@ -836,6 +834,24 @@ export const CreateClipsPage: React.FC = () => {
             </div>
             <ProgressBar value={liveJob.progressPercent} />
           </div>
+
+          {liveJob.diagnostics?.clipSelection && (
+            <div
+              className={`rounded-xl border p-3 text-xs ${
+                liveJob.diagnostics.clipSelection.shortfall
+                  ? 'border-amber-500/25 bg-amber-500/[0.06] text-amber-200'
+                  : 'border-emerald-500/20 bg-emerald-500/[0.05] text-emerald-200'
+              }`}
+            >
+              <strong>
+                Clips generated: {liveJob.diagnostics.clipSelection.generatedCount} of{' '}
+                {liveJob.diagnostics.clipSelection.requestedCount} requested.
+              </strong>
+              {liveJob.diagnostics.clipSelection.shortfall && (
+                <p className="mt-1">{liveJob.diagnostics.clipSelection.message}</p>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 gap-1.5">
             {PIPELINE_STAGES.map((st, idx) => {
@@ -1884,13 +1900,53 @@ export const CreateClipsPage: React.FC = () => {
 
               <Select
                 label="Number of Clips"
-                value={String(settings.clipCount)}
-                onChange={(e) => setSettings({ ...settings, clipCount: Number(e.target.value) })}
-                options={[1, 2, 3, 4, 5, 6, 8, 10].map((n) => ({
-                  value: String(n),
-                  label: `${n} unique ${n === 1 ? 'clip' : 'clips'}`,
-                }))}
+                value={clipCountChoice}
+                onChange={(e) => {
+                  if (e.target.value === 'custom') {
+                    setCustomClipCountSelected(true);
+                    setSettings((prev) => ({
+                      ...prev,
+                      clipCount: Math.min(prev.clipCount, systemClipLimit),
+                    }));
+                    return;
+                  }
+                  const count = Number(e.target.value);
+                  setCustomClipCountSelected(false);
+                  setSettings((prev) => ({ ...prev, clipCount: count }));
+                }}
+                options={[
+                  ...standardClipCounts.map((count) => ({
+                    value: String(count),
+                    label: `${count} clips`,
+                    disabled: count > systemClipLimit,
+                  })),
+                  { value: 'custom', label: 'Custom count…' },
+                ]}
               />
+              {clipCountChoice === 'custom' && (
+                <Input
+                  label="Custom clip count"
+                  type="number"
+                  min={1}
+                  max={systemClipLimit}
+                  step={1}
+                  value={settings.clipCount}
+                  onChange={(e) => {
+                    const value = Math.floor(Number(e.target.value) || 1);
+                    setSettings((prev) => ({
+                      ...prev,
+                      clipCount: Math.max(1, Math.min(systemClipLimit, value)),
+                    }));
+                  }}
+                  hint={`Choose any whole number from 1 to ${systemClipLimit} clips.`}
+                />
+              )}
+              {systemClipLimit < 15 && (
+                <p className="text-[11px] leading-relaxed text-zinc-500 sm:col-span-2 lg:col-span-3">
+                  This workspace is configured for up to {systemClipLimit} clips per job. Preset
+                  counts above the limit are unavailable.
+                </p>
+              )}
 
               <Select
                 label="Aspect Ratio & Reframing"
@@ -1953,21 +2009,6 @@ export const CreateClipsPage: React.FC = () => {
               />
 
               <Select
-                label="Editing Intensity"
-                value={settings.editingIntensity}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    editingIntensity: e.target.value as ProjectProcessingSettings['editingIntensity'],
-                  })
-                }
-                options={EDITING_INTENSITIES.map((i) => ({
-                  value: i,
-                  label: i.charAt(0).toUpperCase() + i.slice(1),
-                }))}
-              />
-
-              <Select
                 label="Long-Video Chunk Window"
                 value={String(settings.chunkDurationSec || 600)}
                 onChange={(e) =>
@@ -1986,159 +2027,25 @@ export const CreateClipsPage: React.FC = () => {
             </div>
           </Card>
 
-          {/* 3. Captions & Audio / Visual Studio */}
-          <Card className="p-6 space-y-6">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Captions className="w-4 h-4 text-[#38BDF8]" />
-                <h2 className="text-base font-semibold text-white">
-                  3. Animated Subtitles & Audio Mastering
-                </h2>
-              </div>
-              <Switch
-                checked={settings.captionStyle.enabled}
-                onChange={(v) => updateCaption('enabled', v)}
-                label="Burn Subtitles"
-              />
+          {/* Source-preserving export settings */}
+          <Card className="p-6 space-y-4">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+              <h2 className="text-base font-semibold text-white">3. Source-Preserving Export</h2>
             </div>
-
-            {settings.captionStyle.enabled && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-2 border-t border-white/[0.07]">
-                <Select
-                  label="Font Family"
-                  value={settings.captionStyle.font}
-                  onChange={(e) => updateCaption('font', e.target.value)}
-                  options={[
-                    { value: 'DejaVu Sans Bold', label: 'Studio Sans Bold' },
-                    { value: 'DejaVu Sans', label: 'Clean Sans Regular' },
-                    { value: 'DejaVu Sans Mono', label: 'Creator Mono' },
-                  ]}
-                />
-                <Input
-                  label="Font Size (px)"
-                  type="number"
-                  min={24}
-                  max={72}
-                  value={settings.captionStyle.fontSize}
-                  onChange={(e) => updateCaption('fontSize', Number(e.target.value))}
-                />
-                <Select
-                  label="Vertical Placement"
-                  value={settings.captionStyle.position}
-                  onChange={(e) =>
-                    updateCaption(
-                      'position',
-                      e.target.value as ProjectProcessingSettings['captionStyle']['position']
-                    )
-                  }
-                  options={CAPTION_POSITIONS.map((p) => ({
-                    value: p,
-                    label: p.charAt(0).toUpperCase() + p.slice(1),
-                  }))}
-                />
-                <Select
-                  label="Animation Mode"
-                  value={settings.captionStyle.animation}
-                  onChange={(e) =>
-                    updateCaption(
-                      'animation',
-                      e.target.value as ProjectProcessingSettings['captionStyle']['animation']
-                    )
-                  }
-                  options={CAPTION_ANIMATIONS.map((a) => ({
-                    value: a,
-                    label: a.replace('_', ' ').toUpperCase(),
-                  }))}
-                />
-                <Input
-                  label="Primary Text Color"
-                  type="color"
-                  value={settings.captionStyle.textColor}
-                  onChange={(e) => updateCaption('textColor', e.target.value)}
-                  className="h-10 p-1 cursor-pointer"
-                />
-                <Input
-                  label="Active Word Highlight"
-                  type="color"
-                  value={settings.captionStyle.highlightColor}
-                  onChange={(e) => updateCaption('highlightColor', e.target.value)}
-                  className="h-10 p-1 cursor-pointer"
-                />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs leading-relaxed text-zinc-400">
+              <div className="rounded-xl border border-white/[0.08] bg-[#0D0D13] p-3.5">
+                <strong className="text-zinc-200">No automatic text overlays.</strong>{' '}
+                Exports contain no generated subtitles, watermark, intro, or outro text.
               </div>
-            )}
-
-            <div className="pt-4 border-t border-white/[0.07] space-y-4">
-              <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                <Volume2 className="w-3.5 h-3.5 text-emerald-400" /> Audio, Effects & Branding
+              <div className="rounded-xl border border-white/[0.08] bg-[#0D0D13] p-3.5">
+                <strong className="text-zinc-200">Original soundtrack retained.</strong>{' '}
+                Source audio is kept without added music, noise reduction, or loudness processing.
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <Switch
-                  checked={settings.audioNormalization}
-                  onChange={(v) => setSettings({ ...settings, audioNormalization: v })}
-                  label="EBU R128 Audio Normalization"
-                  description="Target -16 LUFS broadcast loudness"
-                />
-                <Switch
-                  checked={settings.noiseReduction}
-                  onChange={(v) => setSettings({ ...settings, noiseReduction: v })}
-                  label="FFT Noise Reduction"
-                  description="Suppress background room hum"
-                />
-                <Switch
-                  checked={settings.silenceRemovalEnabled}
-                  onChange={(v) => setSettings({ ...settings, silenceRemovalEnabled: v })}
-                  label="Smart Dead-Air Trimming"
-                  description={`Threshold: ${settings.silenceThresholdDb} dB`}
-                />
-                <Switch
-                  checked={settings.zoomEffects}
-                  onChange={(v) => setSettings({ ...settings, zoomEffects: v })}
-                  label="Subtle Dynamic Zoom & Fade"
-                  description="Smooth hook emphasis transitions"
-                />
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-2">
-                <Select
-                  label="Licensed Ambient Music Bed"
-                  value={settings.backgroundMusic}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      backgroundMusic: e.target
-                        .value as ProjectProcessingSettings['backgroundMusic'],
-                    })
-                  }
-                  options={[
-                    { value: 'none', label: 'None (Original Speech Only)' },
-                    { value: 'ambient_focus', label: 'Ambient Studio Pad (-22 dB)' },
-                    { value: 'subtle_pulse', label: 'Warm Harmonic Pulse (-22 dB)' },
-                  ]}
-                />
-                <Input
-                  label="Brand Watermark Text (Optional)"
-                  value={settings.watermarkText}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      watermarkText: e.target.value,
-                      watermarkEnabled: e.target.value.trim().length > 0,
-                    })
-                  }
-                  placeholder="@YourChannel"
-                />
-                <Input
-                  label="Intro Lower-Third Banner (Optional)"
-                  value={settings.introText}
-                  onChange={(e) => setSettings({ ...settings, introText: e.target.value })}
-                  placeholder="Shown during opening 2s"
-                />
-                <Input
-                  label="Outro Callout Text (Optional)"
-                  value={settings.outroText}
-                  onChange={(e) => setSettings({ ...settings, outroText: e.target.value })}
-                  placeholder="Follow for Part 2"
-                />
+              <div className="rounded-xl border border-white/[0.08] bg-[#0D0D13] p-3.5 sm:col-span-2">
+                <strong className="text-zinc-200">Reframing only.</strong>{' '}
+                Video is cropped and scaled only as needed for the selected aspect ratio; speech
+                transcription stays internal for moment analysis.
               </div>
             </div>
           </Card>
@@ -2149,49 +2056,28 @@ export const CreateClipsPage: React.FC = () => {
           <Card className="p-5 space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                Live Frame & Caption Preview
+                Frame & Reframing Preview
               </span>
               <Badge variant="brand">{settings.aspectRatio}</Badge>
             </div>
 
             <div className="rounded-xl bg-[#0B0B10] border border-white/10 p-4 flex items-center justify-center min-h-[250px] studio-grid-bg">
               <div
+                aria-label={`Source framing guide for ${settings.aspectRatio}`}
                 className={cn(
-                  'relative rounded-xl border border-white/15 bg-gradient-to-b from-[#1C1C29] to-[#0D0D14] p-3 flex flex-col justify-between overflow-hidden shadow-lg transition-all',
+                  'rounded-xl border border-white/15 bg-gradient-to-b from-[#1C1C29] to-[#0D0D14] overflow-hidden shadow-lg',
                   settings.aspectRatio === '9:16' && 'w-[150px] h-[250px]',
                   settings.aspectRatio === '1:1' && 'w-[200px] h-[200px]',
                   settings.aspectRatio === '16:9' && 'w-full h-[160px]'
                 )}
               >
-                <div className="flex items-center justify-between text-[9px] text-zinc-400 font-mono">
-                  <span>{settings.watermarkText || 'NO WATERMARK'}</span>
-                  <span>{settings.editingIntensity.toUpperCase()}</span>
-                </div>
-
-                {settings.captionStyle.enabled && (
-                  <div
-                    className={cn(
-                      'w-full text-center px-2 py-1.5 rounded-lg border border-white/10',
-                      settings.captionStyle.position === 'top' && 'mb-auto mt-2',
-                      settings.captionStyle.position === 'middle' && 'my-auto',
-                      settings.captionStyle.position === 'bottom' && 'mt-auto mb-1'
-                    )}
-                    style={{
-                      backgroundColor: `rgba(9, 9, 11, ${settings.captionStyle.backgroundOpacity})`,
-                    }}
-                  >
-                    <span
-                      className="text-[11px] font-bold leading-tight"
-                      style={{ color: settings.captionStyle.textColor }}
-                    >
-                      Smart clips keep{' '}
-                      <span style={{ color: settings.captionStyle.highlightColor }}>complete</span>{' '}
-                      context
-                    </span>
-                  </div>
-                )}
+                <div className="h-full w-full bg-[radial-gradient(ellipse_at_50%_38%,rgba(124,92,255,0.24),transparent_55%)]" />
               </div>
             </div>
+            <p className="text-[11px] leading-relaxed text-zinc-500">
+              Exports keep the source picture and soundtrack. Only the crop/scale needed for this
+              aspect ratio is applied—no subtitles, watermarks, or added music.
+            </p>
           </Card>
 
           <Card className="p-5 space-y-4">
