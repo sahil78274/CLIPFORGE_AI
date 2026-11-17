@@ -11,7 +11,7 @@ The Python media engine (`processor/main.py`) executes a deterministic 12-stage 
 | 1 | `importing` | `processor/main.py` | Verifies local workspace paths and initializes isolated per-job temp working folders. |
 | 2 | `validating` | `ingestion/validator.py` | Runs `ffprobe -show_format -show_streams` to validate video stream presence, dimensions, FPS, codec, audio stream, and duration bounds (`>= 3s`). |
 | 3 | `extracting_audio` | `transcription/audio_extractor.py` | Extracts mono 16 kHz PCM WAV (`pcm_s16le`) for ASR/acoustic analysis and probes embedded subtitle streams (`subrip` / `mov_text` / `webvtt`). |
-| 4 | `transcribing` | `transcription/transcriber.py` | Runs multilingual **Faster-Whisper** with automatic language detection and `task=transcribe` (never translation), beam search, Silero VAD padding, and word timestamps. Detected language is checked against Unicode script / conservative Hinglish cues and retried on conflicts. Embedded subtitles, PocketSphinx, and RMS speech windows are unverified analysis fallbacks and are never burned in as spoken captions. |
+| 4 | `transcribing` | `transcription/transcriber.py` | Before chunking, probes representative audio windows spread across the complete source timeline, confidence-weights their Whisper language detections, and chooses one global decoding language/profile. Every transcription chunk then uses `task=transcribe` (never translation) with that language, beam search, Silero VAD padding, and word timestamps. Script/content mismatches are retried against the global decision; captions are withheld if the output still conflicts or global confidence is low. Embedded subtitles, PocketSphinx, and RMS speech windows remain unverified analysis fallbacks and are never burned in as spoken captions. |
 | 5 | `detecting_scenes` | `analysis/scene_detector.py` | Samples frames with OpenCV (`cv2`), computing HSV histogram correlation cuts, frame-difference motion saliency centroids, and Haar frontal-face speaker X coordinates. |
 | 6 | `analyzing_content` | `analysis/content_analyzer.py` | Computes 100ms RMS dBFS energy windows, detects dead-air silence spans, and maps speech rate (WPM), question hooks, and topical transitions across sentences. |
 | 7 | `detecting_moments` | `clip_detection/moment_detector.py` | Builds transcript-boundary candidate windows matching the target duration preset (`15-30s`, `30-45s`, `45-60s`, `60-90s`, or `custom`), aligns AI proposals back to whole transcript segments/words, and scores hook, clarity, emotion, pacing, and completeness. |
@@ -26,10 +26,11 @@ The Python media engine (`processor/main.py`) executes a deterministic 12-stage 
 ## Multilingual and timing regression tests
 
 Run `python -m unittest discover -s processor/tests -v` after installing `processor/requirements.txt`.
-The offline fixtures cover Hindi, English, Romanized Hinglish, Arabic, mixed-language labels,
-script-conflict retry/suppression, verbatim caption text, Whisper word offsets, and speech-safe
-moment boundaries. They stub Whisper outputs so they do not measure acoustic word-error rate;
-real ASR validation requires multilingual Faster-Whisper weights and representative voice videos.
+The offline fixtures cover full-timeline language-window sampling, confidence-weighted global
+language selection, outlier retry, consistent forced-language transcription, Hindi/English/Hinglish
+script handling, Arabic script validation, verbatim caption text, Whisper word offsets, and speech-safe
+moment boundaries. They stub Whisper outputs so they do not measure acoustic word-error rate; real
+ASR validation requires multilingual Faster-Whisper weights and representative voice videos.
 The server integration suite separately exercises generated MP4 ingest/render and chunk recovery.
 
 ---

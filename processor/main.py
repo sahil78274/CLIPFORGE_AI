@@ -6,6 +6,7 @@ chunk-boundary deduplication, temporary file cleanup per chunk, and checkpoint r
 """
 import argparse
 import json
+import math
 import os
 import sys
 import traceback
@@ -27,10 +28,11 @@ from processor.transcription.audio_extractor import (
     extract_embedded_srt,
 )
 from processor.transcription.transcriber import (
+    detect_full_audio_language,
     merge_chunk_segments_deduplicated,
     parse_srt_file,
-    summarize_detected_language,
     transcribe_chunk_media,
+    whisper_model_available,
 )
 from processor.analysis.scene_detector import detect_window_scenes_and_faces
 from processor.analysis.content_analyzer import analyze_audio_and_silence_profile
@@ -47,7 +49,7 @@ from processor.rendering.renderer import render_single_clip
 from processor.rendering.output_validator import validate_rendered_clip
 
 
-CHECKPOINT_VERSION = 2  # invalidates checkpoints made before automatic language validation
+CHECKPOINT_VERSION = 3  # adds full-audio language detection before chunk transcription
 
 
 DURATION_BOUNDS = {
@@ -87,6 +89,31 @@ def _remove_file_safe(path_str: str) -> None:
             os.remove(path_str)
     except Exception:
         pass
+
+
+def _audio_language_sample_windows(
+    duration_sec: float, sample_duration_sec: float = 15.0, max_samples: int = 16
+) -> List[tuple]:
+    """Choose bounded windows spread from the beginning through the end of audio."""
+    duration = max(0.0, float(duration_sec))
+    if duration <= 0.0:
+        return []
+    sample_duration = min(duration, max(1.0, float(sample_duration_sec)))
+    sample_count = min(max_samples, max(3, int(math.ceil(duration / 600.0))))
+    latest_start = max(0.0, duration - sample_duration)
+    if sample_count == 1 or latest_start <= 0.0:
+        starts = [0.0]
+    else:
+        starts = [latest_start * idx / float(sample_count - 1) for idx in range(sample_count)]
+    windows = []
+    seen = set()
+    for start in starts:
+        start = round(max(0.0, min(latest_start, start)), 3)
+        key = (start, round(min(duration, start + sample_duration), 3))
+        if key not in seen:
+            seen.add(key)
+            windows.append(key)
+    return windows
 
 
 def _protect_caption_word_boundaries(
@@ -145,6 +172,71 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
         max_dur = float(settings.get("customMaxDuration") or 30.0)
     desired_count = max(1, min(10, int(settings.get("clipCount") or 3)))
 
+    # Detect across representative windows spanning the complete source audio before
+    # constructing/processing transcription chunks. This prevents each short chunk
+    # from independently guessing a different script for the same video.
+    whisper_model_size = str(job_cfg.get("whisperModelSize") or "small")
+    whisper_model_path = str(job_cfg.get("whisperModelPath") or "")
+    whisper_device = str(job_cfg.get("whisperDevice") or "cpu")
+    whisper_compute_type = str(job_cfg.get("whisperComputeType") or "int8")
+    language_hint = str(settings.get("language") or "auto")
+    full_audio_language = {
+        "language": "und",
+        "languageProfile": "und",
+        "allowedLanguages": [],
+        "languageConfidence": 0.0,
+        "languageValidated": False,
+        "sampleCount": 0,
+        "sampleWindows": 0,
+        "retryCount": 0,
+    }
+    language_probe_warning = ""
+    if probe.get("hasAudio"):
+        emit_progress("transcribing", 12, "Loading Whisper and sampling language across the full audio...")
+    if not probe.get("hasAudio"):
+        language_probe_warning = "No audio stream was available for full-audio language detection."
+    elif not whisper_model_available(
+        whisper_model_size, whisper_model_path, whisper_device, whisper_compute_type
+    ):
+        language_probe_warning = (
+            "The multilingual Whisper model was unavailable for full-audio language detection; "
+            "captions will be withheld rather than guessed."
+        )
+    else:
+        language_probe_wavs: List[str] = []
+        try:
+            for sample_index, (sample_start, sample_end) in enumerate(
+                _audio_language_sample_windows(duration_sec)
+            ):
+                sample_wav = extract_chunk_pcm_wav(
+                    source_path=source_path,
+                    work_dir=work_dir,
+                    ffmpeg_path=ffmpeg_path,
+                    has_audio=True,
+                    start_sec=sample_start,
+                    duration_sec=sample_end - sample_start,
+                    chunk_index=9000 + sample_index,
+                )
+                language_probe_wavs.append(sample_wav)
+            full_audio_language = detect_full_audio_language(
+                sample_wav_paths=language_probe_wavs,
+                model_size=whisper_model_size,
+                model_path=whisper_model_path,
+                device=whisper_device,
+                compute_type=whisper_compute_type,
+                language_hint=language_hint,
+            )
+        except Exception as exc:
+            language_probe_warning = f"Full-audio language detection failed: {exc}"
+        finally:
+            for sample_wav in language_probe_wavs:
+                _remove_file_safe(sample_wav)
+        if not full_audio_language.get("languageValidated", False) and not language_probe_warning:
+            language_probe_warning = (
+                "Full-audio language confidence was below the validation threshold; "
+                "captions will be withheld rather than guessed."
+            )
+
     if mode == "regenerate_clip" and job_cfg.get("regenerateSpec"):
         spec = job_cfg["regenerateSpec"]
         c_s = max(0.0, float(spec["startSec"]))
@@ -174,11 +266,17 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             win_start=c_s,
             win_end=c_e,
             embedded_global_segments=embedded_segs,
-            whisper_model_size=str(job_cfg.get("whisperModelSize") or "small"),
-            whisper_model_path=str(job_cfg.get("whisperModelPath") or ""),
-            whisper_device=str(job_cfg.get("whisperDevice") or "cpu"),
-            whisper_compute_type=str(job_cfg.get("whisperComputeType") or "int8"),
-            language=str(settings.get("language") or "auto"),
+            whisper_model_size=whisper_model_size,
+            whisper_model_path=whisper_model_path,
+            whisper_device=whisper_device,
+            whisper_compute_type=whisper_compute_type,
+            language=language_hint,
+            expected_language=full_audio_language.get("language"),
+            expected_languages=full_audio_language.get("allowedLanguages") or None,
+            expected_language_profile=str(full_audio_language.get("languageProfile") or ""),
+            global_language_confidence=float(full_audio_language.get("languageConfidence") or 0.0),
+            global_language_validated=bool(full_audio_language.get("languageValidated")),
+            require_global_language_validation=True,
         )
         all_segments = tr_result["segments"]
 
@@ -327,11 +425,17 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
                     win_start=win_start,
                     win_end=win_end,
                     embedded_global_segments=embedded_global_segments,
-                    whisper_model_size=str(job_cfg.get("whisperModelSize") or "small"),
-                    whisper_model_path=str(job_cfg.get("whisperModelPath") or ""),
-                    whisper_device=str(job_cfg.get("whisperDevice") or "cpu"),
-                    whisper_compute_type=str(job_cfg.get("whisperComputeType") or "int8"),
-                    language=str(settings.get("language") or "auto"),
+                    whisper_model_size=whisper_model_size,
+                    whisper_model_path=whisper_model_path,
+                    whisper_device=whisper_device,
+                    whisper_compute_type=whisper_compute_type,
+                    language=language_hint,
+                    expected_language=full_audio_language.get("language"),
+                    expected_languages=full_audio_language.get("allowedLanguages") or None,
+                    expected_language_profile=str(full_audio_language.get("languageProfile") or ""),
+                    global_language_confidence=float(full_audio_language.get("languageConfidence") or 0.0),
+                    global_language_validated=bool(full_audio_language.get("languageValidated")),
+                    require_global_language_validation=True,
                 )
                 engine_used = tr_chunk["engine"]
                 detected_lang = tr_chunk["detectedLanguage"]
@@ -471,9 +575,16 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             segments=all_segments,
         )
 
-    # Aggregate Whisper's validated per-chunk labels; do not report the last chunk's
-    # language as if it described an entire multilingual video.
-    detected_lang = summarize_detected_language(all_segments, fallback=detected_lang)
+    if language_probe_warning and language_probe_warning not in warnings_list:
+        warnings_list.append(language_probe_warning)
+    if full_audio_language.get("languageValidated"):
+        detected_lang = str(
+            full_audio_language.get("languageProfile")
+            if full_audio_language.get("languageProfile") in {"hinglish", "multilingual"}
+            else full_audio_language.get("language")
+        )
+    else:
+        detected_lang = "und"
 
     # Stage 9 & 10: Smart Editing (high-precision per-clip speaker reframing + ASS captions) & Rendering
     emit_progress(
@@ -629,6 +740,10 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
         "diagnostics": {
             "whisperStatus": whisper_status,
             "aiUsed": used_ai,
+            "detectedLanguageConfidence": float(full_audio_language.get("languageConfidence") or 0.0),
+            "detectedLanguageProfile": str(full_audio_language.get("languageProfile") or "und"),
+            "languageProbeSampleCount": int(full_audio_language.get("sampleCount") or 0),
+            "languageProbeRetryCount": int(full_audio_language.get("retryCount") or 0),
             "captionsLanguageValidated": any(
                 segment.get("captionable", False) and segment.get("languageValidated", False)
                 for segment in all_segments
