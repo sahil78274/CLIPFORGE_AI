@@ -154,6 +154,19 @@ export interface VideoRecord {
   createdAt: string;
 }
 
+export interface MetadataFallbackReason {
+  provider: 'gemini' | 'openai_compatible';
+  code:
+    | 'not_configured'
+    | 'http_error'
+    | 'network_error'
+    | 'malformed_response'
+    | 'incomplete_response'
+    | 'provider_error';
+  message: string;
+  statusCode?: number;
+}
+
 export interface ClipMetadata {
   titleOptions: string[];
   descriptions: {
@@ -173,6 +186,7 @@ export interface ClipMetadata {
     windowsByPlatform?: Record<string, string>;
   };
   generatedBy: 'gemini' | 'openai_compatible' | 'deterministic_nlp';
+  fallbackReason?: MetadataFallbackReason;
 }
 
 export interface ClipItem {
@@ -226,6 +240,7 @@ export interface ProcessingJobItem {
     captionsLanguageValidated: boolean;
     ffmpegAvailable: boolean;
     warnings: string[];
+    metadataFallbacks?: Array<MetadataFallbackReason & { affectedClips: number }>;
   };
   chunkProgress?: ChunkProgressInfo;
   youtubeImport?: {

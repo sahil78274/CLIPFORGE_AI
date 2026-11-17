@@ -164,12 +164,15 @@ export const clipController = {
     }
 
     const project = await Project.findById(clip.projectId);
-    const { metadata, aiNotice } = await generateClipMetadataWithGracefulFallback({
-      projectTitle: project?.title || clip.title,
-      clipTranscript: clip.transcript || clip.title,
-      category: clip.category,
-      durationSec: clip.durationSec,
-    });
+    const { metadata, aiNotice } = await generateClipMetadataWithGracefulFallback(
+      {
+        projectTitle: project?.title || clip.title,
+        clipTranscript: clip.transcript || clip.title,
+        category: clip.category,
+        durationSec: clip.durationSec,
+      },
+      { clipId: String(clip._id) }
+    );
 
     clip.metadata = metadata;
     clip.markModified('metadata');

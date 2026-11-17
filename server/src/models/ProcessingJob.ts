@@ -1,5 +1,6 @@
 import mongoose, { Document, Schema, Types } from 'mongoose';
 import type { PipelineStage } from '@clipforge/shared';
+import type { IMetadataFallbackReason } from './Clip';
 
 export interface IProcessingJob extends Document {
   userId: Types.ObjectId;
@@ -29,6 +30,7 @@ export interface IProcessingJob extends Document {
     captionsLanguageValidated: boolean;
     ffmpegAvailable: boolean;
     warnings: string[];
+    metadataFallbacks?: Array<IMetadataFallbackReason & { affectedClips: number }>;
   };
   chunkProgress?: {
     enabled: boolean;
@@ -103,6 +105,7 @@ const processingJobSchema = new Schema<IProcessingJob>(
       captionsLanguageValidated: { type: Boolean, default: false },
       ffmpegAvailable: { type: Boolean, default: true },
       warnings: { type: [String], default: [] },
+      metadataFallbacks: { type: [Schema.Types.Mixed], default: [] },
     },
     chunkProgress: { type: Schema.Types.Mixed },
     youtubeImport: { type: Schema.Types.Mixed },

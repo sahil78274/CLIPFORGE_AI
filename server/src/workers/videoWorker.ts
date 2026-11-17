@@ -9,6 +9,7 @@ import {
   Project,
   Video,
   getOrCreateSystemConfig,
+  type IMetadataFallbackReason,
   type IVideo,
 } from '../models';
 import { getStorageAdapter } from '../services/storageService';
@@ -155,6 +156,10 @@ export async function executeProcessingJob(
   const cfg = await getOrCreateSystemConfig();
 
   let lastStage = claimed.stage || 'importing';
+  const metadataFallbacks = new Map<
+    string,
+    IMetadataFallbackReason & { affectedClips: number }
+  >();
 
   try {
     // Stage 1a: Acquire actual source media (Google Drive import or YouTube import).
@@ -609,12 +614,40 @@ export async function executeProcessingJob(
         await storage.saveFromLocalFile(rc.localThumbPath, thumbStorageKey, 'image/jpeg');
       }
 
-      const { metadata } = await generateClipMetadataWithGracefulFallback({
-        projectTitle: project.title,
-        clipTranscript: rc.transcript || project.title,
-        category: rc.category || 'insight',
-        durationSec: rc.durationSec || 15,
-      });
+      const { metadata } = await generateClipMetadataWithGracefulFallback(
+        {
+          projectTitle: project.title,
+          clipTranscript: rc.transcript || project.title,
+          category: rc.category || 'insight',
+          durationSec: rc.durationSec || 15,
+        },
+        {
+          jobId,
+          clipId:
+            claimed.type === 'regenerate_clip' && claimed.targetClipId
+              ? String(claimed.targetClipId)
+              : undefined,
+          clipIndex: i + 1,
+        },
+        aiProvider
+      );
+
+      if (metadata.fallbackReason) {
+        const reason = metadata.fallbackReason;
+        const reasonKey = `${reason.provider}:${reason.code}:${reason.statusCode || ''}`;
+        const previous = metadataFallbacks.get(reasonKey);
+        metadataFallbacks.set(reasonKey, {
+          ...reason,
+          affectedClips: (previous?.affectedClips || 0) + 1,
+        });
+        await ProcessingJob.findByIdAndUpdate(jobId, {
+          $set: {
+            'diagnostics.aiProvider': aiProvider.providerName,
+            'diagnostics.aiConfigured': aiProvider.isConfigured(),
+            'diagnostics.metadataFallbacks': Array.from(metadataFallbacks.values()),
+          },
+        });
+      }
 
       if (claimed.type === 'regenerate_clip' && claimed.targetClipId && i === 0) {
         const updatedClip = await Clip.findByIdAndUpdate(
@@ -632,6 +665,7 @@ export async function executeProcessingJob(
               durationSec: rc.durationSec,
               editingApplied: rc.editingApplied || [],
               captionStyle: effectiveSettings.captionStyle,
+              metadata,
               status: 'ready',
             },
           },
@@ -708,6 +742,7 @@ export async function executeProcessingJob(
           captionsLanguageValidated: Boolean(result.diagnostics?.captionsLanguageValidated),
           ffmpegAvailable: true,
           warnings: result.diagnostics?.warnings || [],
+          metadataFallbacks: Array.from(metadataFallbacks.values()),
         },
       },
     });
