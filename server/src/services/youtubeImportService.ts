@@ -24,6 +24,7 @@ import {
   reserveCreditsForJob,
 } from './walletService';
 import { enqueueProcessingJob, getActiveQueueMode } from '../queues/videoQueue';
+import { assertClipCountWithinSystemLimit } from './processingSettingsService';
 import { AppError } from '../utils/errors';
 
 /**
@@ -143,10 +144,8 @@ export async function initiateYouTubeClipGeneration(params: {
   autoStart?: boolean;
 }) {
   const cfg = await getOrCreateSystemConfig();
-  const settings: ProjectProcessingSettings = {
-    ...params.settings,
-    clipCount: Math.min(params.settings.clipCount, cfg.maxClipsPerJob || 10),
-  };
+  const settings: ProjectProcessingSettings = { ...params.settings };
+  assertClipCountWithinSystemLimit(settings.clipCount, cfg.maxClipsPerJob);
 
   const fetchReport = await fetchYouTubeVideoMetadataAndAccess(params.url, {
     userId: String(params.userId),

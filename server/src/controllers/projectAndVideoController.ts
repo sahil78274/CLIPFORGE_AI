@@ -11,6 +11,7 @@ import {
   getOrCreateSystemConfig,
 } from '../models';
 import { probeMediaFile } from '../services/mediaProbeService';
+import { assertClipCountWithinSystemLimit } from '../services/processingSettingsService';
 import { getStorageAdapter } from '../services/storageService';
 import {
   downloadSafeDirectMediaUrl,
@@ -185,7 +186,7 @@ export const videoController = {
         }
       }
       const parsedSettings = processingSettingsSchema.parse(rawSettings || {});
-      parsedSettings.clipCount = Math.min(parsedSettings.clipCount, cfg.maxClipsPerJob);
+      assertClipCountWithinSystemLimit(parsedSettings.clipCount, cfg.maxClipsPerJob);
 
       const probe = await probeMediaFile(uploadedFile.path);
       if (probe.durationSec > cfg.maxVideoDurationSec) {
@@ -328,7 +329,7 @@ export const videoController = {
       }
 
       const settings = processingSettingsSchema.parse(req.body.settings || {});
-      settings.clipCount = Math.min(settings.clipCount, cfg.maxClipsPerJob);
+      assertClipCountWithinSystemLimit(settings.clipCount, cfg.maxClipsPerJob);
 
       const estimatedCost = await calculateJobCreditCost(probe.durationSec, settings.clipCount);
 

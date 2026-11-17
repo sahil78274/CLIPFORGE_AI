@@ -237,9 +237,16 @@ export interface ProcessingJobItem {
     aiConfigured: boolean;
     whisperStatus: string;
     detectedLanguage: string;
-    captionsLanguageValidated: boolean;
+    transcriptLanguageValidated: boolean;
+    captionsLanguageValidated?: boolean;
     ffmpegAvailable: boolean;
     warnings: string[];
+    clipSelection?: {
+      requestedCount: number;
+      generatedCount: number;
+      shortfall: boolean;
+      message: string;
+    };
     metadataFallbacks?: Array<MetadataFallbackReason & { affectedClips: number }>;
   };
   chunkProgress?: ChunkProgressInfo;

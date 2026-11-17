@@ -372,7 +372,7 @@ export const adminController = {
     if (req.body.maxVideoDurationSec !== undefined)
       config.maxVideoDurationSec = Math.max(30, Number(req.body.maxVideoDurationSec));
     if (req.body.maxClipsPerJob !== undefined)
-      config.maxClipsPerJob = Math.max(1, Math.min(20, Number(req.body.maxClipsPerJob)));
+      config.maxClipsPerJob = Math.floor(Math.max(1, Math.min(20, Number(req.body.maxClipsPerJob))));
     if (req.body.supportedPlatforms && typeof req.body.supportedPlatforms === 'object') {
       config.supportedPlatforms = req.body.supportedPlatforms;
       config.markModified('supportedPlatforms');

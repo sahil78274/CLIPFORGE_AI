@@ -41,6 +41,20 @@ export async function getOrCreateSystemConfig(): Promise<ISystemConfig> {
     );
     cfg = (await SystemConfig.findOne({ singletonKey: 'global' }))!;
   }
+  if (!cfg.clipCountLimitMigrated) {
+    // Raise the legacy default from 10 to 15 while preserving intentional admin limits.
+    const existingLimit = Number(cfg.maxClipsPerJob);
+    const migratedLimit = !Number.isFinite(existingLimit)
+      ? 15
+      : existingLimit === 10
+        ? 15
+        : Math.max(1, Math.min(20, Math.floor(existingLimit)));
+    await SystemConfig.updateOne(
+      { _id: cfg._id, clipCountLimitMigrated: { $ne: true } },
+      { $set: { clipCountLimitMigrated: true, maxClipsPerJob: migratedLimit } }
+    );
+    cfg = (await SystemConfig.findOne({ singletonKey: 'global' }))!;
+  }
   if (cfg.maxVideoDurationSec === 3600 && !cfg.chunkDurationSec) {
     // Upgrade legacy 1-hour default config to 10-hour chunked processing defaults
     cfg.maxVideoDurationSec = 36000;

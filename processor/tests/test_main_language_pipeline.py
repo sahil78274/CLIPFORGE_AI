@@ -34,12 +34,20 @@ class FullAudioLanguagePipelineTests(unittest.TestCase):
         self.assertNotIn("chunk-plan", events)
         self._assert_global_language_passed(result, transcribe)
 
+    def test_result_reports_requested_and_generated_counts_without_filling_weak_slots(self):
+        result, _, _ = self._run_pipeline("full_pipeline", clip_count=5)
+        selection = result["diagnostics"]["clipSelection"]
+        self.assertEqual(selection["requestedCount"], 5)
+        self.assertEqual(selection["generatedCount"], 1)
+        self.assertTrue(selection["shortfall"])
+        self.assertIn("lower-quality clips were not substituted", selection["message"].lower())
+
     def _assert_global_language_passed(self, result, transcribe):
         self.assertEqual(result["detectedLanguage"], "hi")
         self.assertEqual(result["diagnostics"]["detectedLanguageConfidence"], 0.93)
         self.assertEqual(result["diagnostics"]["languageProbeSampleCount"], 3)
         self.assertEqual(result["diagnostics"]["languageProbeRetryCount"], 1)
-        self.assertTrue(result["diagnostics"]["captionsLanguageValidated"])
+        self.assertTrue(result["diagnostics"]["transcriptLanguageValidated"])
         call = transcribe.call_args.kwargs
         self.assertEqual(call["expected_language"], "hi")
         self.assertEqual(call["expected_languages"], ["hi"])
@@ -48,7 +56,7 @@ class FullAudioLanguagePipelineTests(unittest.TestCase):
         self.assertTrue(call["global_language_validated"])
         self.assertTrue(call["require_global_language_validation"])
 
-    def _run_pipeline(self, mode):
+    def _run_pipeline(self, mode, clip_count=1):
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
         root = tempdir.name
@@ -167,10 +175,7 @@ class FullAudioLanguagePipelineTests(unittest.TestCase):
                     return_value=("null", 720, 1280, []),
                 )
             )
-            stack.enter_context(patch("generate_ass_subtitles", return_value=[]))
-            stack.enter_context(patch("build_audio_filter_chain", return_value=("anull", [])))
-            stack.enter_context(patch("synthesize_licensed_ambient_bed", return_value=None))
-            stack.enter_context(patch("render_single_clip"))
+            render_mock = stack.enter_context(patch("render_single_clip"))
             stack.enter_context(
                 patch(
                     "validate_rendered_clip",
@@ -189,10 +194,14 @@ class FullAudioLanguagePipelineTests(unittest.TestCase):
                 "mode": mode,
                 "settings": {
                     "durationPreset": "15-30",
-                    "clipCount": 1,
+                    "clipCount": clip_count,
                     "silenceRemovalEnabled": False,
                     "backgroundMusic": "none",
                     "captionStyle": {"enabled": True},
+                    "watermarkEnabled": True,
+                    "watermarkText": "@test_creator",
+                    "introText": "Intro text",
+                    "outroText": "Outro text",
                 },
                 "whisperModelSize": "small",
                 "whisperModelPath": "",
@@ -206,6 +215,21 @@ class FullAudioLanguagePipelineTests(unittest.TestCase):
 
         with open(output_json_path, encoding="utf-8") as result_file:
             result = json.load(result_file)
+        render_kwargs = render_mock.call_args.kwargs
+        self.assertTrue(render_kwargs["has_source_audio"])
+        self.assertNotIn("has_ass_file", render_kwargs)
+        self.assertNotIn("audio_filter_chain", render_kwargs)
+        expected_requested_count = 1 if mode == "regenerate_clip" else clip_count
+        self.assertEqual(
+            result["diagnostics"]["clipSelection"]["requestedCount"],
+            expected_requested_count,
+        )
+        self.assertEqual(result["diagnostics"]["clipSelection"]["generatedCount"], 1)
+        self.assertEqual(
+            result["diagnostics"]["clipSelection"]["shortfall"],
+            expected_requested_count > 1,
+        )
+        self.assertEqual(result["clips"][0]["editingApplied"], [])
         self.assertEqual(transcribe_mock.call_count, 1)
         if mode == "full_pipeline":
             self.assertEqual(candidate_detection.call_count, 1)

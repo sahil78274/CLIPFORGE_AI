@@ -27,9 +27,17 @@ export interface IProcessingJob extends Document {
     aiConfigured: boolean;
     whisperStatus: string;
     detectedLanguage: string;
-    captionsLanguageValidated: boolean;
+    transcriptLanguageValidated: boolean;
+    /** Legacy field retained so existing job records remain readable. */
+    captionsLanguageValidated?: boolean;
     ffmpegAvailable: boolean;
     warnings: string[];
+    clipSelection?: {
+      requestedCount: number;
+      generatedCount: number;
+      shortfall: boolean;
+      message: string;
+    };
     metadataFallbacks?: Array<IMetadataFallbackReason & { affectedClips: number }>;
   };
   chunkProgress?: {
@@ -102,9 +110,11 @@ const processingJobSchema = new Schema<IProcessingJob>(
       aiConfigured: { type: Boolean, default: false },
       whisperStatus: { type: String, default: 'pending' },
       detectedLanguage: { type: String, default: 'und' },
+      transcriptLanguageValidated: { type: Boolean, default: false },
       captionsLanguageValidated: { type: Boolean, default: false },
       ffmpegAvailable: { type: Boolean, default: true },
       warnings: { type: [String], default: [] },
+      clipSelection: { type: Schema.Types.Mixed },
       metadataFallbacks: { type: [Schema.Types.Mixed], default: [] },
     },
     chunkProgress: { type: Schema.Types.Mixed },

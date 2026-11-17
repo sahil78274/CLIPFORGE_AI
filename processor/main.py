@@ -39,17 +39,12 @@ from processor.analysis.content_analyzer import analyze_audio_and_silence_profil
 from processor.clip_detection.moment_detector import detect_candidate_moments
 from processor.clip_detection.clip_selector import select_unique_clips
 from processor.video_editor.reframer import compute_reframe_filter
-from processor.video_editor.subtitle_generator import generate_ass_subtitles
-from processor.video_editor.audio_chain import (
-    build_audio_filter_chain,
-    synthesize_licensed_ambient_bed,
-    trim_boundary_dead_air,
-)
+from processor.video_editor.audio_chain import trim_boundary_dead_air
 from processor.rendering.renderer import render_single_clip
 from processor.rendering.output_validator import validate_rendered_clip
 
 
-CHECKPOINT_VERSION = 3  # adds full-audio language detection before chunk transcription
+CHECKPOINT_VERSION = 4  # invalidates pre-quality-ranking candidates from earlier pipeline runs
 
 
 DURATION_BOUNDS = {
@@ -116,15 +111,17 @@ def _audio_language_sample_windows(
     return windows
 
 
-def _protect_caption_word_boundaries(
+def _protect_spoken_word_boundaries(
     clip_start: float, clip_end: float, candidate_start: float, candidate_end: float,
     segments: List[Dict[str, Any]], duration_sec: float,
 ) -> tuple:
-    """Undo a silence trim if it would remove any first/last verified spoken word."""
+    """Undo an edge trim if it would remove a verified first or last spoken word."""
     words = [
         word
         for segment in segments
-        if segment.get("captionable", False) and segment.get("languageValidated", False)
+        if segment.get("languageValidated", False)
+        and not segment.get("unverified", False)
+        and not segment.get("synthetic", False)
         and float(segment.get("end", 0.0)) > candidate_start
         and float(segment.get("start", 0.0)) < candidate_end
         for word in (segment.get("words") or [])
@@ -170,7 +167,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
     else:
         min_dur = float(settings.get("customMinDuration") or 15.0)
         max_dur = float(settings.get("customMaxDuration") or 30.0)
-    desired_count = max(1, min(10, int(settings.get("clipCount") or 3)))
+    desired_count = max(1, min(20, int(settings.get("clipCount") or 3)))
 
     # Detect across representative windows spanning the complete source audio before
     # constructing/processing transcription chunks. This prevents each short chunk
@@ -200,7 +197,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
     ):
         language_probe_warning = (
             "The multilingual Whisper model was unavailable for full-audio language detection; "
-            "captions will be withheld rather than guessed."
+            "transcript reliability could not be verified."
         )
     else:
         language_probe_wavs: List[str] = []
@@ -234,7 +231,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
         if not full_audio_language.get("languageValidated", False) and not language_probe_warning:
             language_probe_warning = (
                 "Full-audio language confidence was below the validation threshold; "
-                "captions will be withheld rather than guessed."
+                "transcript reliability could not be verified."
             )
 
     if mode == "regenerate_clip" and job_cfg.get("regenerateSpec"):
@@ -564,7 +561,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
         emit_progress(
             "selecting_clips",
             75,
-            f"Selecting up to {desired_count} non-overlapping clips across {total_chunks} chunk(s)...",
+            f"Ranking up to {desired_count} complete, high-quality non-overlapping moments across {total_chunks} chunk(s)...",
         )
         selected_clips = select_unique_clips(
             candidates=all_candidates,
@@ -573,6 +570,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             min_dur=min_dur,
             max_dur=max_dur,
             segments=all_segments,
+            silence_intervals=all_silence_intervals,
         )
 
     if language_probe_warning and language_probe_warning not in warnings_list:
@@ -586,16 +584,29 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
     else:
         detected_lang = "und"
 
-    # Stage 9 & 10: Smart Editing (high-precision per-clip speaker reframing + ASS captions) & Rendering
+    selection_requested_count = (
+        1 if mode == "regenerate_clip" and job_cfg.get("regenerateSpec") else desired_count
+    )
+    selection_actual_count = len(selected_clips)
+    selection_shortfall = selection_actual_count < selection_requested_count
+    selection_message = ""
+    if selection_shortfall:
+        selection_message = (
+            f"Only {selection_actual_count} of {selection_requested_count} requested clips met the "
+            "moment-quality checks. Duplicate or lower-quality clips were not substituted."
+        )
+        if selection_message not in warnings_list:
+            warnings_list.append(selection_message)
+
+    # Stage 9 & 10: Preserve the source picture and soundtrack, with only the
+    # requested aspect-ratio reframe applied to the video.
     emit_progress(
         "editing",
         80,
-        "Computing speaker-tracked crops, animated ASS captions, and audio mastering chains...",
+        "Preparing source-preserving reframing and audio rendering...",
     )
 
     aspect_ratio = str(settings.get("aspectRatio") or "9:16")
-    caption_style = settings.get("captionStyle") or {}
-    bg_music_style = str(settings.get("backgroundMusic") or "none")
 
     rendered_outputs: List[Dict[str, Any]] = []
     total_clips = max(1, len(selected_clips))
@@ -613,7 +624,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             silence_intervals=all_silence_intervals,
             enabled=bool(settings.get("silenceRemovalEnabled", True)),
         )
-        c_start, c_end = _protect_caption_word_boundaries(
+        c_start, c_end = _protect_spoken_word_boundaries(
             c_start, c_end, candidate_start, candidate_end, all_segments, duration_sec
         )
         did_trim = did_trim and (
@@ -633,49 +644,22 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             else all_scenes
         )
 
-        vf_base, target_w, target_h, vf_applied = compute_reframe_filter(
+        vf_base, _, _, vf_applied = compute_reframe_filter(
             src_w=int(probe["width"]),
             src_h=int(probe["height"]),
             aspect_ratio=aspect_ratio,
             scenes=clip_scenes,
             clip_start=c_start,
             clip_end=c_end,
-            zoom_effects=bool(settings.get("zoomEffects", True)),
-            editing_intensity=str(settings.get("editingIntensity") or "balanced"),
+            zoom_effects=False,
+            editing_intensity="subtle",
         )
-
-        ass_file = os.path.join(clip_work, "captions.ass")
-        sub_applied = generate_ass_subtitles(
-            ass_path=ass_file,
-            play_w=target_w,
-            play_h=target_h,
-            clip_start=c_start,
-            clip_end=c_end,
-            segments=all_segments,
-            caption_style=caption_style,
-            watermark_enabled=bool(settings.get("watermarkEnabled", False)),
-            watermark_text=str(settings.get("watermarkText") or ""),
-            intro_text=str(settings.get("introText") or ""),
-            outro_text=str(settings.get("outroText") or ""),
-        )
-
-        af_chain, af_applied = build_audio_filter_chain(
-            clip_dur=c_dur,
-            noise_reduction=bool(settings.get("noiseReduction", True)),
-            audio_normalization=bool(settings.get("audioNormalization", True)),
-        )
-        if did_trim:
-            af_applied.insert(0, "Synchronized dead-air silence trim")
-
-        ambient_wav = synthesize_licensed_ambient_bed(clip_work, c_dur, bg_music_style)
-        if ambient_wav:
-            af_applied.append(f"Licensed ambient bed ({bg_music_style})")
 
         pct = 82 + int(round((idx / total_clips) * 12))
         emit_progress(
             "rendering",
             pct,
-            f"Rendering clip {clip_num} of {total_clips} ({aspect_ratio} H.264 MP4 @ {c_start:.1f}s)...",
+            f"Rendering clip {clip_num} of {total_clips} ({aspect_ratio} MP4 @ {c_start:.1f}s)...",
         )
 
         out_mp4 = os.path.join(output_dir, f"clip_{clip_num:02d}.mp4")
@@ -690,10 +674,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             start_sec=c_start,
             duration_sec=c_dur,
             video_filter_base=vf_base,
-            has_ass_file=os.path.isfile(ass_file),
             has_source_audio=bool(probe["hasAudio"]),
-            audio_filter_chain=af_chain,
-            ambient_bed_path=ambient_wav,
         )
 
         rendered_outputs.append(
@@ -709,7 +690,8 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
                 "selectionReason": clip_cand["reason"],
                 "category": clip_cand["category"],
                 "engagementScore": clip_cand["engagementScore"],
-                "editingApplied": vf_applied + sub_applied + af_applied,
+                "editingApplied": vf_applied
+                + (["Trimmed leading/trailing silence"] if did_trim else []),
             }
         )
 
@@ -744,10 +726,18 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             "detectedLanguageProfile": str(full_audio_language.get("languageProfile") or "und"),
             "languageProbeSampleCount": int(full_audio_language.get("sampleCount") or 0),
             "languageProbeRetryCount": int(full_audio_language.get("retryCount") or 0),
-            "captionsLanguageValidated": any(
-                segment.get("captionable", False) and segment.get("languageValidated", False)
+            "transcriptLanguageValidated": any(
+                segment.get("languageValidated", False)
+                and not segment.get("unverified", False)
+                and not segment.get("synthetic", False)
                 for segment in all_segments
             ),
+            "clipSelection": {
+                "requestedCount": selection_requested_count,
+                "generatedCount": len(rendered_outputs),
+                "shortfall": len(rendered_outputs) < selection_requested_count,
+                "message": selection_message,
+            },
             "warnings": warnings_list,
         },
         "clips": rendered_outputs,
@@ -756,7 +746,11 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
     with open(output_json_path, "w", encoding="utf-8") as f:
         json.dump(result, f)
 
-    emit_progress("completed", 100, "All clips rendered and validated.")
+    emit_progress(
+        "completed",
+        100,
+        f"Rendered {len(rendered_outputs)} of {selection_requested_count} requested clip(s).",
+    )
 
 
 def main() -> None:

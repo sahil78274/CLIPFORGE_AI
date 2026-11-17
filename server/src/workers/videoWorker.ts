@@ -15,6 +15,7 @@ import {
 import { getStorageAdapter } from '../services/storageService';
 import { getMediaAcquisitionService } from '../services/mediaAcquisition';
 import { getGoogleDriveImportService } from '../services/googleDrive/GoogleDriveImportService';
+import { assertClipCountWithinSystemLimit } from '../services/processingSettingsService';
 import {
   calculateJobCreditCost,
   releaseReservedCredits,
@@ -381,6 +382,11 @@ export async function executeProcessingJob(
       ...project.settings,
       ...(claimed.overrides || {}),
     };
+    const requestedClipCount =
+      claimed.type === 'regenerate_clip' ? 1 : Number(effectiveSettings.clipCount || 3);
+    if (claimed.type === 'full_pipeline') {
+      assertClipCountWithinSystemLimit(requestedClipCount, cfg.maxClipsPerJob);
+    }
 
     const chunkDurationSec =
       effectiveSettings.chunkDurationSec ||
@@ -597,9 +603,37 @@ export async function executeProcessingJob(
 
     const createdClipIds: string[] = [];
     const renderedClips: any[] = result.clips || [];
+    const resultSelection = result.diagnostics?.clipSelection || {};
+    const actualClipCount = renderedClips.length;
+    const effectiveRequestedCount = Number(resultSelection.requestedCount ?? requestedClipCount);
+    const clipSelectionShortfall = actualClipCount < effectiveRequestedCount;
+    const clipSelectionMessage = String(
+      resultSelection.message ||
+        (clipSelectionShortfall
+          ? `Only ${actualClipCount} of ${effectiveRequestedCount} requested clips met the moment-quality checks. Duplicate or lower-quality clips were not substituted.`
+          : '')
+    );
+    const clipSelection = {
+      requestedCount: effectiveRequestedCount,
+      generatedCount: actualClipCount,
+      shortfall: clipSelectionShortfall,
+      message: clipSelectionMessage,
+    };
 
     if (renderedClips.length === 0) {
-      throw new Error('Processor produced 0 rendered clips');
+      await ProcessingJob.findByIdAndUpdate(jobId, {
+        $set: {
+          'diagnostics.clipSelection': clipSelection,
+          'diagnostics.transcriptLanguageValidated': Boolean(
+            result.diagnostics?.transcriptLanguageValidated
+          ),
+          'diagnostics.warnings': result.diagnostics?.warnings || [],
+        },
+      });
+      throw new Error(
+        clipSelectionMessage ||
+          `No suitable clips were found (0 of ${effectiveRequestedCount} requested).`
+      );
     }
 
     for (let i = 0; i < renderedClips.length; i++) {
@@ -731,7 +765,7 @@ export async function executeProcessingJob(
         stage: 'completed',
         status: 'completed',
         progressPercent: 100,
-        currentMessage: `Generated and validated ${renderedClips.length} short clip(s).`,
+        currentMessage: `Generated ${actualClipCount} of ${effectiveRequestedCount} requested clip(s).${clipSelectionShortfall ? ` ${clipSelectionMessage}` : ''}`,
         creditsDeducted: deducted,
         completedAt: new Date(),
         diagnostics: {
@@ -739,9 +773,12 @@ export async function executeProcessingJob(
           aiConfigured: aiProvider.isConfigured(),
           whisperStatus: result.diagnostics?.whisperStatus || result.transcriptionEngine,
           detectedLanguage: result.detectedLanguage || 'und',
-          captionsLanguageValidated: Boolean(result.diagnostics?.captionsLanguageValidated),
+          transcriptLanguageValidated: Boolean(
+            result.diagnostics?.transcriptLanguageValidated
+          ),
           ffmpegAvailable: true,
           warnings: result.diagnostics?.warnings || [],
+          clipSelection,
           metadataFallbacks: Array.from(metadataFallbacks.values()),
         },
       },
@@ -752,8 +789,8 @@ export async function executeProcessingJob(
     await Notification.create({
       userId: claimed.userId,
       type: 'job_completed',
-      title: 'Clips Ready for Download',
-      message: `"${project.title}" finished rendering ${renderedClips.length} short clip(s).`,
+      title: clipSelectionShortfall ? 'Clips Ready with a Selection Shortfall' : 'Clips Ready for Download',
+      message: `"${project.title}" generated ${actualClipCount} of ${effectiveRequestedCount} requested clip(s).${clipSelectionShortfall ? ` ${clipSelectionMessage}` : ''}`,
       actionUrl: `/dashboard/projects/${String(project._id)}`,
     });
 

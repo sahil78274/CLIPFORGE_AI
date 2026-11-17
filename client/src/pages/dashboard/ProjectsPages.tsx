@@ -359,8 +359,8 @@ export const ProjectDetailPage: React.FC = () => {
                   <Badge variant="default">Speech: {latestJob.diagnostics.detectedLanguage}</Badge>
                 )}
               {latestJob.diagnostics?.whisperStatus !== 'pending' &&
-                latestJob.diagnostics?.captionsLanguageValidated === false && (
-                  <Badge variant="warning">Captions withheld: language not verified</Badge>
+                latestJob.diagnostics?.transcriptLanguageValidated === false && (
+                  <Badge variant="warning">Transcript language not verified</Badge>
                 )}
               <Badge variant={latestJob.diagnostics?.aiConfigured ? 'brand' : 'default'}>
                 AI: {latestJob.diagnostics?.aiProvider || 'provider not checked'}
@@ -379,6 +379,24 @@ export const ProjectDetailPage: React.FC = () => {
               ))}
             </div>
           </div>
+
+          {latestJob.diagnostics?.clipSelection && (
+            <div
+              className={`rounded-xl border p-3 text-xs ${
+                latestJob.diagnostics.clipSelection.shortfall
+                  ? 'border-amber-500/25 bg-amber-500/[0.06] text-amber-200'
+                  : 'border-emerald-500/20 bg-emerald-500/[0.05] text-emerald-200'
+              }`}
+            >
+              <strong>
+                Clips generated: {latestJob.diagnostics.clipSelection.generatedCount} of{' '}
+                {latestJob.diagnostics.clipSelection.requestedCount} requested.
+              </strong>
+              {latestJob.diagnostics.clipSelection.shortfall && (
+                <p className="mt-1">{latestJob.diagnostics.clipSelection.message}</p>
+              )}
+            </div>
+          )}
 
           {latestJob.diagnostics?.metadataFallbacks?.map((fallback) => (
             <div

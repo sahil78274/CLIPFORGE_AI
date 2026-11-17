@@ -14,6 +14,7 @@ import {
 } from '../models';
 import { checkMediaBinaries } from '../services/mediaProbeService';
 import { getAIProvider } from '../services/aiService';
+import { assertClipCountWithinSystemLimit } from '../services/processingSettingsService';
 import { getYouTubeMediaSourceAdapter } from '../services/youtubeMediaSourceAdapter';
 import {
   createPaymentOrder,
@@ -163,6 +164,8 @@ export const jobController = {
       throw new BadRequestError('Project does not have a validated source video yet');
     }
 
+    const cfg = await getOrCreateSystemConfig();
+    assertClipCountWithinSystemLimit(project.settings.clipCount, cfg.maxClipsPerJob);
     const estDuration = video
       ? video.durationSec
       : project.youtubeMetadata?.durationSec ||
@@ -270,6 +273,10 @@ export const jobController = {
     const video = oldJob.videoId ? await Video.findById(oldJob.videoId) : null;
     if (!project || (!video && !oldJob.youtubeImport && !oldJob.driveImport)) {
       throw new NotFoundError('Associated project or source video missing');
+    }
+    if (oldJob.type === 'full_pipeline') {
+      const cfg = await getOrCreateSystemConfig();
+      assertClipCountWithinSystemLimit(project.settings.clipCount, cfg.maxClipsPerJob);
     }
 
     const estDurationSec =

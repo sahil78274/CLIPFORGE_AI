@@ -64,7 +64,7 @@ export const processingSettingsSchema = z
       .default(DEFAULT_PROCESSING_SETTINGS.durationPreset),
     customMinDuration: z.number().min(5).max(180).default(15),
     customMaxDuration: z.number().min(8).max(240).default(30),
-    clipCount: z.number().int().min(1).max(10).default(3),
+    clipCount: z.number().int().min(1).max(20).default(3),
     aspectRatio: z.enum(['9:16', '1:1', '16:9']).default('9:16'),
     language: z.string().max(16).default('auto'),
     editingIntensity: z.enum(['subtle', 'balanced', 'dynamic']).default('balanced'),
