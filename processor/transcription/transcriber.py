@@ -98,6 +98,18 @@ def _script_counts(text: str) -> Counter:
             counts["bn"] += 1
         elif "GURMUKHI" in name:
             counts["pa"] += 1
+        elif "TAMIL" in name:
+            counts["ta"] += 1
+        elif "TELUGU" in name:
+            counts["te"] += 1
+        elif "KANNADA" in name:
+            counts["kn"] += 1
+        elif "MALAYALAM" in name:
+            counts["ml"] += 1
+        elif "GUJARATI" in name:
+            counts["gu"] += 1
+        elif "THAI" in name:
+            counts["th"] += 1
         else:
             counts["other"] += 1
     return counts
@@ -124,7 +136,7 @@ def _infer_transcript_language(text: str, detected_language: Optional[str] = Non
         return None
 
     # Non-Latin scripts are highly diagnostic for the languages relevant here.
-    for code in ("hi", "ar", "bn", "pa", "ru"):
+    for code in ("hi", "ar", "ta", "te", "kn", "ml", "gu", "bn", "pa", "ru", "th"):
         if counts[code] >= 3 and counts[code] / total >= 0.55:
             return code
 
@@ -458,12 +470,64 @@ def _text_supports_language(language: str, text: str) -> bool:
         return counts["hi"] >= 3 or _latin_language_hints(text)[0] >= 2
     if language in {"ar", "fa", "ur"}:
         return counts["ar"] >= 3
-    if language in {"bn", "pa", "ru"}:
+    if language in {"bn", "pa", "ru", "ta", "te", "kn", "ml", "gu", "th"}:
         return counts[language] >= 3
     if language == "en":
         _, english_hits = _latin_language_hints(text)
         return counts["latin"] >= 4 and (english_hits >= 2 or _strong_english_hits(text) >= 1)
     return bool(text.strip())
+
+
+def _text_matches_expected_language(
+    language: str,
+    text: str,
+    allowed_languages: Optional[List[str]] = None,
+    expected_profile: str = "",
+) -> bool:
+    """Validate a chunk against the language detected across the complete audio."""
+    expected = _normalize_language(language)
+    if not expected or not str(text or "").strip():
+        return False
+
+    allowed = {
+        code
+        for code in (_normalize_language(item) for item in (allowed_languages or [expected]))
+        if code
+    }
+    allowed.add(expected)
+    counts = _script_counts(text)
+    mixed_global_profile = (
+        expected_profile in {"hinglish", "multilingual"}
+        and {"hi", "en"}.issubset(allowed)
+    )
+    inferred = _infer_transcript_language(text, expected)
+    compatible_families = {
+        "hi": {"hi", "mr", "ne", "sa"},
+        "ar": {"ar", "ur", "fa"},
+    }
+    if inferred:
+        compatible_codes = compatible_families.get(inferred, {inferred})
+        if not compatible_codes.intersection(allowed):
+            return False
+
+    for code in allowed:
+        if code == "en":
+            # English has no unique Unicode script. The full-audio decision supplies
+            # the language identity; require Latin speech text and let script checks
+            # above reject Hindi/Arabic/other-script output.
+            supports_language = counts["latin"] >= 4
+        else:
+            supports_language = _text_supports_language(code, text)
+        if not supports_language:
+            continue
+        if code == "hi" and not mixed_global_profile:
+            # Hindi-only captions should be in Devanagari. Romanized Hindi is
+            # allowed only when the full-audio probe found both Hindi and English.
+            if counts["hi"] < 3:
+                continue
+        return True
+
+    return False
 
 
 def _try_faster_whisper(
@@ -473,6 +537,9 @@ def _try_faster_whisper(
     device: str,
     compute_type: str,
     language: str,
+    expected_language: Optional[str] = None,
+    expected_languages: Optional[List[str]] = None,
+    expected_language_profile: str = "",
 ) -> Optional[Dict[str, Any]]:
     local_only = bool(model_path and os.path.isdir(model_path))
     target_model = model_path if local_only else model_size
@@ -484,25 +551,37 @@ def _try_faster_whisper(
     if model is None:
         return None
 
+    expected = _normalize_language(expected_language)
     try:
-        # Always let Whisper detect the spoken language on the first pass. User
-        # settings are only a low-confidence hint, never a forced translation mode.
-        first_segments, first_info = _decode_whisper(model, wav_path, forced_language=None)
+        # The full-audio preflight supplies a stable forced language for every
+        # chunk. Without it (e.g. standalone clip regeneration), Whisper starts
+        # with automatic detection and validates its own result.
+        first_segments, first_info = _decode_whisper(
+            model, wav_path, forced_language=expected
+        )
     except Exception:
         return None
 
     first_text = " ".join(segment["text"] for segment in first_segments).strip()
     first_language, first_confidence = _whisper_language(first_info, first_text)
-    retry_target = _language_conflict(first_language, first_text)
-    language_hint = _normalize_language(language)
-    if not retry_target and first_language == "und" and language_hint:
-        retry_target = language_hint
+    if expected:
+        first_matches_expected = _text_matches_expected_language(
+            expected, first_text, expected_languages, expected_language_profile
+        )
+        retry_target = expected if not first_matches_expected else None
+    else:
+        retry_target = _language_conflict(first_language, first_text)
+        language_hint = _normalize_language(language)
+        if not retry_target and first_language == "und" and language_hint:
+            retry_target = language_hint
 
     chosen_segments = first_segments
-    chosen_language = first_language
+    chosen_language = expected or first_language
     chosen_confidence = first_confidence
     retried = False
-    validation_conflict = bool(retry_target)
+    validation_conflict = (
+        not first_matches_expected if expected else bool(retry_target)
+    )
 
     if retry_target:
         retry_model = model
@@ -518,24 +597,36 @@ def _try_faster_whisper(
             retried = True
             retry_text = " ".join(segment["text"] for segment in retry_segments).strip()
             retry_language, retry_confidence = _whisper_language(retry_info, retry_text)
-            # A forced decode can still be wrong; only trust it when the text and
-            # the model's language label no longer contradict each other.
-            remaining_conflict = _language_conflict(retry_language, retry_text)
+            if expected:
+                retry_matches_expected = _text_matches_expected_language(
+                    expected, retry_text, expected_languages, expected_language_profile
+                )
+                validation_conflict = not retry_matches_expected
+                chosen_language = expected
+            else:
+                # A forced decode can still be wrong; only trust it when its
+                # detected language agrees with the transcript's script/content.
+                remaining_conflict = _language_conflict(retry_language, retry_text)
+                validation_conflict = bool(remaining_conflict)
+                chosen_language = retry_language
             if retry_segments:
                 chosen_segments = retry_segments
-                chosen_language = retry_language
                 chosen_confidence = retry_confidence
-                validation_conflict = bool(remaining_conflict)
             else:
                 # An empty retry cannot validate the original conflicting transcript.
                 validation_conflict = True
         except Exception:
             validation_conflict = True
 
-    validated = bool(chosen_language != "und" and not validation_conflict)
-    if validated and chosen_confidence < 0.20 and not _text_supports_language(chosen_language, " ".join(
-        segment["text"] for segment in chosen_segments
-    )):
+    full_text = " ".join(segment["text"] for segment in chosen_segments).strip()
+    if expected:
+        validation_conflict = not _text_matches_expected_language(
+            expected, full_text, expected_languages, expected_language_profile
+        )
+    validated = bool(chosen_segments and chosen_language != "und" and not validation_conflict)
+    if not expected and validated and chosen_confidence < 0.20 and not _text_supports_language(
+        chosen_language, full_text
+    ):
         validated = False
 
     full_text = " ".join(segment["text"] for segment in chosen_segments).strip()
@@ -557,6 +648,235 @@ def _try_faster_whisper(
         "initialDetectedLanguage": first_language,
         "retryLanguage": retry_target if retried else None,
     }
+
+
+def _aggregate_language_observations(
+    observations: List[Dict[str, Any]], total_windows: int
+) -> Dict[str, Any]:
+    if not observations:
+        return {
+            "language": "und",
+            "languageProfile": "und",
+            "allowedLanguages": [],
+            "languageConfidence": 0.0,
+            "languageValidated": False,
+            "sampleCount": 0,
+            "sampleWindows": total_windows,
+        }
+
+    label_scores: Counter = Counter()
+    profile_scores: Counter = Counter()
+    total_score = 0.0
+    confidence_sum = 0.0
+    for observation in observations:
+        text = str(observation.get("text") or "")
+        confidence = max(0.0, min(1.0, float(observation.get("confidence", 0.0))))
+        text_weight = max(0.25, min(1.0, len(text) / 80.0))
+        weight = confidence * text_weight
+        language = _normalize_language(observation.get("language"))
+        if not language or weight <= 0.0:
+            continue
+        label_scores[language] += weight
+        profile = str(observation.get("profile") or language)
+        profile_scores[profile] += weight
+        total_score += weight
+        confidence_sum += confidence * text_weight
+
+    if not label_scores or total_score <= 0.0:
+        return {
+            "language": "und",
+            "languageProfile": "und",
+            "allowedLanguages": [],
+            "languageConfidence": 0.0,
+            "languageValidated": False,
+            "sampleCount": 0,
+            "sampleWindows": total_windows,
+        }
+
+    dominant_language, dominant_score = label_scores.most_common(1)[0]
+    label_share = dominant_score / total_score
+    language_profile = dominant_language
+    if profile_scores.get("hinglish", 0.0) / total_score >= 0.20:
+        language_profile = "hinglish"
+    else:
+        substantial = [
+            code for code, score in label_scores.items() if score / total_score >= 0.35
+        ]
+        if profile_scores.get("multilingual", 0.0) / total_score >= 0.20 or len(substantial) > 1:
+            language_profile = "multilingual"
+
+    # Whisper has no single Hinglish language token. Use Hindi as the stable
+    # decoding language so Hindi words render in Devanagari while English words
+    # remain English; validation permits either language within that profile.
+    primary_language = "hi" if language_profile == "hinglish" else dominant_language
+    allowed_languages = {
+        code for code, score in label_scores.items() if score / total_score >= 0.35
+    }
+    if language_profile == "hinglish":
+        allowed_languages.update({"hi", "en"})
+    for observation in observations:
+        if observation.get("profile") != "multilingual":
+            continue
+        text = str(observation.get("text") or "")
+        counts = _script_counts(text)
+        if counts["ar"] >= 3:
+            allowed_languages.add("ar")
+        if counts["hi"] >= 3:
+            allowed_languages.add("hi")
+        if counts["latin"] >= 4 and (
+            _latin_language_hints(text)[1] >= 1 or _strong_english_hits(text) >= 1
+        ):
+            allowed_languages.add("en")
+
+    coverage = min(1.0, len(observations) / float(max(1, total_windows)))
+    mean_confidence = confidence_sum / max(0.001, sum(
+        max(0.25, min(1.0, len(str(item.get("text") or "")) / 80.0))
+        for item in observations
+    ))
+    consensus = 1.0 if language_profile in {"hinglish", "multilingual"} else label_share
+    confidence = max(0.0, min(1.0, mean_confidence * coverage * consensus))
+    return {
+        "language": primary_language,
+        "languageProfile": language_profile,
+        "allowedLanguages": sorted(allowed_languages or {primary_language}),
+        "languageConfidence": round(confidence, 4),
+        "languageValidated": confidence >= 0.50,
+        "sampleCount": len(observations),
+        "sampleWindows": total_windows,
+    }
+
+
+def whisper_model_available(
+    model_size: str, model_path: str, device: str, compute_type: str
+) -> bool:
+    """Load/cache the configured model before the full-audio language probe."""
+    local_only = bool(model_path and os.path.isdir(model_path))
+    target_model = model_path if local_only else model_size
+    if not local_only and target_model.lower().endswith(".en"):
+        target_model = target_model[:-3]
+    return _load_whisper_model(target_model, device, compute_type, local_only) is not None
+
+
+def detect_full_audio_language(
+    sample_wav_paths: List[str],
+    model_size: str,
+    model_path: str,
+    device: str,
+    compute_type: str,
+    language_hint: str = "auto",
+) -> Dict[str, Any]:
+    """Detect one stable language from evenly sampled windows across the full audio."""
+    observations: List[Dict[str, Any]] = []
+    by_path: Dict[str, Dict[str, Any]] = {}
+    for wav_path in sample_wav_paths:
+        result = _try_faster_whisper(
+            wav_path=wav_path,
+            model_size=model_size,
+            model_path=model_path,
+            device=device,
+            compute_type=compute_type,
+            language=language_hint,
+        )
+        text = " ".join(
+            str(segment.get("text") or "") for segment in (result or {}).get("segments", [])
+        ).strip()
+        language = _normalize_language((result or {}).get("detectedLanguage"))
+        if (
+            result
+            and result.get("languageValidated")
+            and language
+            and text
+        ):
+            observation = {
+                "path": wav_path,
+                "language": language,
+                "profile": str(result.get("languageProfile") or language),
+                "confidence": float(result.get("languageProbability", 0.0)),
+                "text": text,
+            }
+            observations.append(observation)
+            by_path[wav_path] = observation
+
+    detection = _aggregate_language_observations(observations, len(sample_wav_paths))
+    if detection["language"] != "und":
+        retry_count = 0
+        allowed = detection["allowedLanguages"]
+        primary = detection["language"]
+        profile = detection["languageProfile"]
+        # Recheck low-confidence or outlier windows using the full-audio decision.
+        # This prevents one short chunk's script guess from setting the whole job's
+        # caption language, while retaining supported Hindi-English code-switching.
+        for wav_path in sample_wav_paths:
+            previous = by_path.get(wav_path)
+            if previous and previous["language"] in allowed and detection["languageConfidence"] >= 0.65:
+                continue
+            retry = _try_faster_whisper(
+                wav_path=wav_path,
+                model_size=model_size,
+                model_path=model_path,
+                device=device,
+                compute_type=compute_type,
+                language=language_hint,
+                expected_language=primary,
+                expected_languages=allowed,
+                expected_language_profile=profile,
+            )
+            retry_text = " ".join(
+                str(segment.get("text") or "") for segment in (retry or {}).get("segments", [])
+            ).strip()
+            if retry and retry.get("languageValidated") and retry_text:
+                retry_count += 1
+                by_path[wav_path] = {
+                    "path": wav_path,
+                    "language": primary,
+                    "profile": profile if profile in {"hinglish", "multilingual"} else str(retry.get("languageProfile") or profile),
+                    "confidence": float(retry.get("languageProbability", 0.0)),
+                    "text": retry_text,
+                }
+            else:
+                by_path.pop(wav_path, None)
+
+        observations = list(by_path.values())
+        detection = _aggregate_language_observations(observations, len(sample_wav_paths))
+        detection["retryCount"] = retry_count
+
+    hint = _normalize_language(language_hint)
+    if hint and not detection["languageValidated"] and sample_wav_paths:
+        hinted_observations: List[Dict[str, Any]] = []
+        for wav_path in sample_wav_paths:
+            retry = _try_faster_whisper(
+                wav_path=wav_path,
+                model_size=model_size,
+                model_path=model_path,
+                device=device,
+                compute_type=compute_type,
+                language=language_hint,
+                expected_language=hint,
+                expected_languages=[hint],
+            )
+            retry_text = " ".join(
+                str(segment.get("text") or "") for segment in (retry or {}).get("segments", [])
+            ).strip()
+            if retry and retry.get("languageValidated") and retry_text:
+                hinted_observations.append(
+                    {
+                        "language": hint,
+                        "profile": str(retry.get("languageProfile") or hint),
+                        "confidence": float(retry.get("languageProbability", 0.0)),
+                        "text": retry_text,
+                    }
+                )
+        hinted_detection = _aggregate_language_observations(
+            hinted_observations, len(sample_wav_paths)
+        )
+        if hinted_detection["languageValidated"]:
+            hinted_detection["retryCount"] = len(hinted_observations)
+            hinted_detection["usedLanguageHint"] = True
+            detection = hinted_detection
+
+    detection.setdefault("retryCount", 0)
+    detection["languageValidated"] = bool(detection["languageValidated"])
+    return detection
 
 
 def _try_pocketsphinx_offline(wav_path: str) -> List[Dict[str, Any]]:
@@ -687,11 +1007,17 @@ def transcribe_chunk_media(
     whisper_device: str,
     whisper_compute_type: str,
     language: str,
+    expected_language: Optional[str] = None,
+    expected_languages: Optional[List[str]] = None,
+    expected_language_profile: str = "",
+    global_language_confidence: float = 0.0,
+    global_language_validated: bool = False,
+    require_global_language_validation: bool = False,
 ) -> Dict[str, Any]:
     """
-    Transcribes a bounded audio window using Whisper auto-detection, validates the
-    detected language against the returned script, retries conflicts, then shifts
-    word and segment timestamps into the global video timeline.
+    Transcribes a bounded window in Whisper's transcription mode. The full-audio
+    language decision, when provided, is used consistently and checked against the
+    output script before captions are allowed.
     """
     warnings: List[str] = []
     chunk_dur = max(0.5, win_end - win_start)
@@ -703,28 +1029,53 @@ def transcribe_chunk_media(
         device=whisper_device,
         compute_type=whisper_compute_type,
         language=language,
+        expected_language=expected_language,
+        expected_languages=expected_languages,
+        expected_language_profile=expected_language_profile,
     )
     if whisper_result is not None:
         if whisper_result["retried"]:
+            retry_language = whisper_result.get("retryLanguage") or expected_language or "auto"
             warnings.append(
-                "Whisper language validation detected a transcript/script conflict "
-                f"({whisper_result['initialDetectedLanguage']} vs "
-                f"{whisper_result['retryLanguage']}); the chunk was re-transcribed using "
-                f"{whisper_result['retryLanguage']}."
+                "Whisper language validation detected a transcript/script conflict; "
+                f"the chunk was retried using {retry_language}."
             )
-        if not whisper_result["languageValidated"]:
+        global_gate = not require_global_language_validation or global_language_validated
+        captions_validated = bool(whisper_result["languageValidated"] and global_gate)
+        if require_global_language_validation and not global_language_validated:
             warnings.append(
-                "Whisper language remained uncertain or conflicted after retry; "
-                "captions are suppressed for this audio chunk."
+                "Full-audio language detection did not meet the confidence threshold; "
+                "captions are suppressed rather than guessing a script."
             )
+        elif not captions_validated:
+            warnings.append(
+                "Whisper output did not match the full-audio language after retry; "
+                "captions are suppressed for this chunk."
+            )
+
+        decode_mode = f"full-audio={expected_language}" if expected_language else "auto-detect"
+        result_language = (
+            expected_language
+            if require_global_language_validation and global_language_validated
+            else whisper_result["detectedLanguage"]
+        )
+        result_profile = expected_language_profile or whisper_result["languageProfile"]
+        shifted_segments = shift_segments_to_global(whisper_result["segments"], win_start)
+        for segment in shifted_segments:
+            segment["language"] = result_language
+            segment["languageProfile"] = result_profile
+            segment["languageValidated"] = captions_validated
+            segment["captionable"] = captions_validated
+            segment["globalLanguageConfidence"] = global_language_confidence
         return {
             "engine": "faster-whisper",
-            "whisperStatus": f"faster-whisper ({whisper_result.get('modelName', whisper_model_size)}; auto-detect)",
-            "detectedLanguage": whisper_result["detectedLanguage"],
-            "languageProfile": whisper_result["languageProfile"],
+            "whisperStatus": f"faster-whisper ({whisper_result.get('modelName', whisper_model_size)}; {decode_mode})",
+            "detectedLanguage": result_language,
+            "languageProfile": result_profile,
             "languageProbability": whisper_result["languageProbability"],
-            "languageValidated": whisper_result["languageValidated"],
-            "segments": shift_segments_to_global(whisper_result["segments"], win_start),
+            "globalLanguageConfidence": global_language_confidence,
+            "languageValidated": captions_validated,
+            "segments": shifted_segments,
             "warnings": warnings,
         }
 

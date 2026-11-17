@@ -16,7 +16,7 @@ from processor.video_editor.subtitle_generator import generate_ass_subtitles
 from processor.clip_detection import moment_detector
 from processor.clip_detection.moment_detector import detect_candidate_moments
 from processor.clip_detection.clip_selector import select_unique_clips
-from processor.main import _protect_caption_word_boundaries
+from processor.main import _audio_language_sample_windows, _protect_caption_word_boundaries
 
 
 SAMPLE_UTTERANCES = {
@@ -73,7 +73,18 @@ class MultilingualTranscriptionTests(unittest.TestCase):
     def tearDown(self):
         self.tempdir.cleanup()
 
-    def transcribe(self, outputs, language="auto", offset=0.0):
+    def transcribe(
+        self,
+        outputs,
+        language="auto",
+        offset=0.0,
+        expected_language=None,
+        expected_languages=None,
+        expected_profile="",
+        global_confidence=0.0,
+        global_validated=False,
+        require_global=False,
+    ):
         fake = FakeWhisper(outputs)
         with mock.patch.object(transcriber, "_load_whisper_model", return_value=fake):
             result = transcriber.transcribe_chunk_media(
@@ -86,8 +97,150 @@ class MultilingualTranscriptionTests(unittest.TestCase):
                 whisper_device="cpu",
                 whisper_compute_type="int8",
                 language=language,
+                expected_language=expected_language,
+                expected_languages=expected_languages,
+                expected_language_profile=expected_profile,
+                global_language_confidence=global_confidence,
+                global_language_validated=global_validated,
+                require_global_language_validation=require_global,
             )
         return result, fake
+
+    def test_full_audio_probe_aggregates_samples_and_retries_outlier_with_global_language(self):
+        def result(language, profile, text, probability=0.9):
+            return {
+                "detectedLanguage": language,
+                "languageProfile": profile,
+                "languageProbability": probability,
+                "languageValidated": True,
+                "segments": [{"text": text, "languageValidated": True}],
+            }
+
+        outputs = [
+            result("hi", "hi", SAMPLE_UTTERANCES["hindi"]),
+            result("en", "en", SAMPLE_UTTERANCES["english"]),
+            result("hi", "hi", SAMPLE_UTTERANCES["hindi"]),
+            result("hi", "hi", SAMPLE_UTTERANCES["hindi"]),
+            result("hi", "hi", SAMPLE_UTTERANCES["english"]),
+            result("hi", "hi", SAMPLE_UTTERANCES["hindi"]),
+        ]
+        with mock.patch.object(transcriber, "_try_faster_whisper", side_effect=outputs) as decode:
+            detected = transcriber.detect_full_audio_language(
+                ["beginning.wav", "middle.wav", "end.wav"],
+                model_size="small",
+                model_path="",
+                device="cpu",
+                compute_type="int8",
+            )
+        self.assertEqual(detected["language"], "hi")
+        self.assertTrue(detected["languageValidated"])
+        self.assertGreater(detected["retryCount"], 0)
+        self.assertEqual(decode.call_count, 6)
+        self.assertEqual(decode.call_args_list[3].kwargs["expected_language"], "hi")
+
+    def test_global_language_confidence_requires_enough_supported_audio_windows(self):
+        result = transcriber._aggregate_language_observations(
+            [
+                {
+                    "language": "hi",
+                    "profile": "hi",
+                    "confidence": 0.95,
+                    "text": SAMPLE_UTTERANCES["hindi"],
+                }
+            ],
+            total_windows=3,
+        )
+        self.assertEqual(result["sampleCount"], 1)
+        self.assertLess(result["languageConfidence"], 0.50)
+        self.assertFalse(result["languageValidated"])
+
+    def test_full_audio_hinglish_profile_keeps_hindi_and_english_allowed(self):
+        text = SAMPLE_UTTERANCES["hinglish"]
+        observed = {
+            "detectedLanguage": "en",
+            "languageProfile": "hinglish",
+            "languageProbability": 0.93,
+            "languageValidated": True,
+            "segments": [{"text": text}],
+        }
+        with mock.patch.object(transcriber, "_try_faster_whisper", return_value=observed) as decode:
+            detected = transcriber.detect_full_audio_language(
+                ["beginning.wav", "middle.wav", "end.wav"],
+                model_size="small",
+                model_path="",
+                device="cpu",
+                compute_type="int8",
+            )
+        self.assertEqual(decode.call_count, 3)
+        self.assertEqual(detected["language"], "hi")
+        self.assertEqual(detected["languageProfile"], "hinglish")
+        self.assertEqual(detected["allowedLanguages"], ["en", "hi"])
+        self.assertTrue(detected["languageValidated"])
+
+    def test_expected_full_audio_language_is_forced_and_wrong_scripts_are_withheld(self):
+        hindi = SAMPLE_UTTERANCES["hindi"]
+        result, fake = self.transcribe(
+            [("hi", hindi)],
+            expected_language="hi",
+            expected_languages=["hi"],
+            expected_profile="hi",
+            global_confidence=0.92,
+            global_validated=True,
+            require_global=True,
+        )
+        self.assertEqual(fake.calls[0]["language"], "hi")
+        self.assertEqual(fake.calls[0]["task"], "transcribe")
+        self.assertTrue(result["languageValidated"])
+        self.assertEqual(result["segments"][0]["text"], hindi)
+        self.assertEqual(result["segments"][0]["language"], "hi")
+        self.assertEqual(result["segments"][0]["languageProfile"], "hi")
+
+        romanized_hindi = SAMPLE_UTTERANCES["hinglish"]
+        result, fake = self.transcribe(
+            [("hi", romanized_hindi), ("hi", romanized_hindi)],
+            expected_language="hi",
+            expected_languages=["hi"],
+            expected_profile="hi",
+            global_confidence=0.92,
+            global_validated=True,
+            require_global=True,
+        )
+        self.assertEqual([call["language"] for call in fake.calls], ["hi", "hi"])
+        self.assertFalse(result["languageValidated"])
+        self.assertFalse(result["segments"][0]["captionable"])
+
+        hinglish, fake = self.transcribe(
+            [("hi", romanized_hindi)],
+            expected_language="hi",
+            expected_languages=["hi", "en"],
+            expected_profile="hinglish",
+            global_confidence=0.92,
+            global_validated=True,
+            require_global=True,
+        )
+        self.assertTrue(hinglish["languageValidated"])
+        self.assertEqual(hinglish["segments"][0]["text"], romanized_hindi)
+        self.assertEqual(hinglish["languageProfile"], "hinglish")
+
+        tamil = "வணக்கம் இன்று நாம் பேசுவோம்"
+        result, fake = self.transcribe(
+            [("hi", tamil), ("hi", tamil)],
+            expected_language="hi",
+            expected_languages=["hi"],
+            global_confidence=0.92,
+            global_validated=True,
+            require_global=True,
+        )
+        self.assertEqual([call["language"] for call in fake.calls], ["hi", "hi"])
+        self.assertFalse(result["languageValidated"])
+        self.assertFalse(result["segments"][0]["captionable"])
+
+    def test_full_audio_probe_windows_span_the_video_timeline(self):
+        windows = _audio_language_sample_windows(36000.0)
+        self.assertEqual(len(windows), 16)
+        self.assertEqual(windows[0][0], 0.0)
+        self.assertEqual(windows[-1][1], 36000.0)
+        self.assertTrue(all(left[0] < right[0] for left, right in zip(windows, windows[1:])))
 
     def test_hindi_script_conflict_retries_and_preserves_words_and_global_word_times(self):
         text = SAMPLE_UTTERANCES["hindi"]
@@ -110,6 +263,34 @@ class MultilingualTranscriptionTests(unittest.TestCase):
         self.assertEqual(result["detectedLanguage"], "en")
         self.assertTrue(result["languageValidated"])
         self.assertEqual(result["segments"][0]["text"], text)
+
+    def test_expected_english_accepts_generic_latin_text_and_global_confidence_gates_captions(self):
+        result, fake = self.transcribe(
+            [("en", "Good morning, everyone.")],
+            expected_language="en",
+            expected_languages=["en"],
+            expected_profile="en",
+            global_confidence=0.88,
+            global_validated=True,
+            require_global=True,
+        )
+        self.assertEqual(fake.calls[0]["language"], "en")
+        self.assertTrue(result["languageValidated"])
+        self.assertEqual(result["segments"][0]["text"], "Good morning, everyone.")
+
+        result, fake = self.transcribe(
+            [("en", SAMPLE_UTTERANCES["english"])],
+            expected_language="en",
+            expected_languages=["en"],
+            expected_profile="en",
+            global_confidence=0.32,
+            global_validated=False,
+            require_global=True,
+        )
+        self.assertEqual(fake.calls[0]["task"], "transcribe")
+        self.assertFalse(result["languageValidated"])
+        self.assertFalse(result["segments"][0]["captionable"])
+        self.assertIn("Full-audio language detection", result["warnings"][0])
 
     def test_hinglish_auto_detection_preserves_mixed_words_and_script(self):
         text = SAMPLE_UTTERANCES["hinglish"]
