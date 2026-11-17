@@ -4,9 +4,59 @@ import crypto from 'crypto';
 import dotenv from 'dotenv';
 import { z } from 'zod';
 
-// Load root .env then server/.env if present
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
-dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+function findProjectRoot(moduleDirectory: string): string {
+  let current = path.resolve(moduleDirectory);
+  while (true) {
+    if (
+      fs.existsSync(path.join(current, 'package.json')) &&
+      fs.existsSync(path.join(current, 'server', 'package.json'))
+    ) {
+      return current;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  // Keep the known server/src/config and server/dist/config layouts as a fallback.
+  return path.resolve(moduleDirectory, '../../..');
+}
+
+function loadEnvFileIfNeeded(envPath: string, targetEnv: NodeJS.ProcessEnv): boolean {
+  if (!fs.existsSync(envPath)) return false;
+
+  let fileEnv: Record<string, string>;
+  try {
+    fileEnv = dotenv.parse(fs.readFileSync(envPath));
+  } catch {
+    // Do not print file contents or values; fail clearly if a present config is unreadable.
+    throw new Error(`Unable to read backend environment file: ${path.basename(envPath)}`);
+  }
+
+  for (const [key, value] of Object.entries(fileEnv)) {
+    const existingValue = targetEnv[key];
+    // Preserve real process-level overrides but let dotenv fill missing/blank values.
+    if (existingValue === undefined || existingValue.trim() === '') {
+      targetEnv[key] = value;
+    }
+  }
+  return true;
+}
+
+/** Resolve env files from the server module location, not npm's workspace cwd. */
+export function loadBackendEnvironment(
+  moduleDirectory: string = __dirname,
+  targetEnv: NodeJS.ProcessEnv = process.env
+): { projectRoot: string; rootEnvLoaded: boolean; serverEnvLoaded: boolean } {
+  const projectRoot = findProjectRoot(moduleDirectory);
+  const rootEnvLoaded = loadEnvFileIfNeeded(path.join(projectRoot, '.env'), targetEnv);
+  const serverEnvLoaded = loadEnvFileIfNeeded(
+    path.join(projectRoot, 'server', '.env'),
+    targetEnv
+  );
+  return { projectRoot, rootEnvLoaded, serverEnvLoaded };
+}
+
+const { projectRoot: PROJECT_ROOT } = loadBackendEnvironment();
 
 function resolveFfmpegPath(): string {
   if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
@@ -41,8 +91,8 @@ function resolveFfprobePath(): string {
 }
 
 function resolvePythonBin(): string {
-  const repoRootVenv = path.resolve(__dirname, '../../../.venv/bin/python');
-  const winVenv = path.resolve(__dirname, '../../../.venv/Scripts/python.exe');
+  const repoRootVenv = path.join(PROJECT_ROOT, '.venv', 'bin', 'python');
+  const winVenv = path.join(PROJECT_ROOT, '.venv', 'Scripts', 'python.exe');
   if (process.env.PYTHON_BIN && fs.existsSync(process.env.PYTHON_BIN)) {
     return process.env.PYTHON_BIN;
   }
@@ -103,7 +153,7 @@ const envSchema = z.object({
   WHISPER_COMPUTE_TYPE: z.string().default('int8'),
 
   AI_PROVIDER: z.enum(['gemini', 'openai_compatible']).default('gemini'),
-  GEMINI_API_KEY: z.string().optional().default(''),
+  GEMINI_API_KEY: z.string().optional().default('').transform((value) => value.trim()),
   GEMINI_MODEL: z.string().default('gemini-2.5-flash'),
   OPENAI_API_KEY: z.string().optional().default(''),
   OPENAI_BASE_URL: z.string().default('https://api.openai.com/v1'),
@@ -189,7 +239,7 @@ const resolvedJwtSecret =
     ? parsed.JWT_ACCESS_SECRET
     : crypto
         .createHash('sha256')
-        .update(`clipforge-dev-secret-${path.resolve(__dirname, '../../..')}`)
+        .update(`clipforge-dev-secret-${PROJECT_ROOT}`)
         .digest('hex');
 
 // Refresh tokens are encrypted at rest with AES-256-GCM. In production require an
@@ -224,7 +274,7 @@ export const env = {
   FFMPEG_PATH: resolveFfmpegPath(),
   FFPROBE_PATH: resolveFfprobePath(),
   PYTHON_BIN: resolvePythonBin(),
-  PROCESSOR_MAIN_PY: path.resolve(__dirname, '../../../processor/main.py'),
+  PROCESSOR_MAIN_PY: path.join(PROJECT_ROOT, 'processor', 'main.py'),
   LOCAL_STORAGE_DIR: path.isAbsolute(parsed.LOCAL_STORAGE_DIR)
     ? parsed.LOCAL_STORAGE_DIR
     : path.resolve(__dirname, '../..', parsed.LOCAL_STORAGE_DIR),

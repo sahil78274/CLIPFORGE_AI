@@ -509,9 +509,9 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
                     max_dur=max_dur,
                     clip_count=desired_count,
                     ai_provider=str(job_cfg.get("aiProvider") or "gemini"),
-                    gemini_api_key=str(job_cfg.get("geminiApiKey") or ""),
+                    gemini_api_key=os.environ.get("GEMINI_API_KEY", ""),
                     gemini_model=str(job_cfg.get("geminiModel") or "gemini-2.5-flash"),
-                    openai_api_key=str(job_cfg.get("openaiApiKey") or ""),
+                    openai_api_key=os.environ.get("OPENAI_API_KEY", ""),
                     openai_base_url=str(
                         job_cfg.get("openaiBaseUrl") or "https://api.openai.com/v1"
                     ),

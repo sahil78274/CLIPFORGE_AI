@@ -153,7 +153,7 @@ def _try_gemini_moment_scoring(
     prompt = _build_moment_prompt(segments, min_dur, max_dur, clip_count)
     url = (
         f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{gemini_model}:generateContent?key={gemini_api_key}"
+        f"{gemini_model}:generateContent"
     )
     req = urllib.request.Request(
         url,
@@ -163,7 +163,10 @@ def _try_gemini_moment_scoring(
                 "generationConfig": {"responseMimeType": "application/json", "temperature": 0.3},
             }
         ).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Content-Type": "application/json",
+            "x-goog-api-key": gemini_api_key,
+        },
         method="POST",
     )
     try:
