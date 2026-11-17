@@ -82,7 +82,7 @@ npm test
 | `S3_BUCKET`, `S3_REGION`, `S3_ENDPOINT`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | If `s3` | *(empty)* | S3-compatible object storage credentials. |
 | `PYTHON_BIN` | No | *(auto-detected `.venv`)* | Path to Python interpreter with `processor/requirements.txt` installed. |
 | `FFMPEG_PATH` / `FFPROBE_PATH` | No | *(auto-detected)* | Explicit binary paths; auto-resolves bundled `@ffmpeg-installer` / `@ffprobe-installer` if omitted. |
-| `WHISPER_MODEL_SIZE` | No | `tiny.en` | Faster-Whisper model size (`tiny.en`, `base`, `small`, `medium`, `large-v3`). |
+| `WHISPER_MODEL_SIZE` | No | `small` | Multilingual Faster-Whisper model size (`tiny`, `base`, `small`, `medium`, `large-v3`). Avoid `.en` models for Hindi, Arabic, or multilingual speech. |
 | `WHISPER_MODEL_PATH` | No | *(empty)* | Optional path to pre-downloaded CTranslate2 Faster-Whisper model folder for air-gapped hosts. |
 | `AI_PROVIDER` | No | `gemini` | `gemini`, `openai_compatible`, or `none`. |
 | `GEMINI_API_KEY` | Optional | *(empty)* | Google AI Studio API key. Marked `NOT CONFIGURED` if omitted. |

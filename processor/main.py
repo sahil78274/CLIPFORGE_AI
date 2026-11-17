@@ -29,6 +29,7 @@ from processor.transcription.audio_extractor import (
 from processor.transcription.transcriber import (
     merge_chunk_segments_deduplicated,
     parse_srt_file,
+    summarize_detected_language,
     transcribe_chunk_media,
 )
 from processor.analysis.scene_detector import detect_window_scenes_and_faces
@@ -44,6 +45,9 @@ from processor.video_editor.audio_chain import (
 )
 from processor.rendering.renderer import render_single_clip
 from processor.rendering.output_validator import validate_rendered_clip
+
+
+CHECKPOINT_VERSION = 2  # invalidates checkpoints made before automatic language validation
 
 
 DURATION_BOUNDS = {
@@ -83,6 +87,30 @@ def _remove_file_safe(path_str: str) -> None:
             os.remove(path_str)
     except Exception:
         pass
+
+
+def _protect_caption_word_boundaries(
+    clip_start: float, clip_end: float, candidate_start: float, candidate_end: float,
+    segments: List[Dict[str, Any]], duration_sec: float,
+) -> tuple:
+    """Undo a silence trim if it would remove any first/last verified spoken word."""
+    words = [
+        word
+        for segment in segments
+        if segment.get("captionable", False) and segment.get("languageValidated", False)
+        and float(segment.get("end", 0.0)) > candidate_start
+        and float(segment.get("start", 0.0)) < candidate_end
+        for word in (segment.get("words") or [])
+        if float(word.get("end", 0.0)) > candidate_start
+        and float(word.get("start", 0.0)) < candidate_end
+    ]
+    if not words:
+        return clip_start, clip_end
+    first_word_start = min(float(word["start"]) for word in words)
+    last_word_end = max(float(word["end"]) for word in words)
+    safe_start = max(0.0, first_word_start - 0.08)
+    safe_end = min(duration_sec, last_word_end + 0.10)
+    return min(clip_start, safe_start), max(clip_end, safe_end)
 
 
 def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
@@ -146,11 +174,11 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             win_start=c_s,
             win_end=c_e,
             embedded_global_segments=embedded_segs,
-            whisper_model_size=str(job_cfg.get("whisperModelSize") or "base"),
+            whisper_model_size=str(job_cfg.get("whisperModelSize") or "small"),
             whisper_model_path=str(job_cfg.get("whisperModelPath") or ""),
             whisper_device=str(job_cfg.get("whisperDevice") or "cpu"),
             whisper_compute_type=str(job_cfg.get("whisperComputeType") or "int8"),
-            language=str(settings.get("language") or "en"),
+            language=str(settings.get("language") or "auto"),
         )
         all_segments = tr_result["segments"]
 
@@ -214,7 +242,11 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
 
         # Restore resumable checkpoint if server/worker restarted mid-job
         saved = load_checkpoint(checkpoint_path)
-        if saved and int(saved.get("totalChunks", -1)) == total_chunks:
+        if (
+            saved
+            and int(saved.get("pipelineVersion", -1)) == CHECKPOINT_VERSION
+            and int(saved.get("totalChunks", -1)) == total_chunks
+        ):
             completed_indices = set(int(i) for i in saved.get("completedChunkIndices", []))
             all_segments: List[Dict[str, Any]] = list(saved.get("segments") or [])
             all_scenes: List[Dict[str, Any]] = list(saved.get("scenes") or [])
@@ -224,7 +256,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             all_candidates: List[Dict[str, Any]] = list(saved.get("candidates") or [])
             used_ai = bool(saved.get("usedAi", False))
             engine_used = str(saved.get("transcriptionEngine") or "faster-whisper")
-            detected_lang = str(saved.get("detectedLanguage") or "en")
+            detected_lang = str(saved.get("detectedLanguage") or "und")
             whisper_status = str(saved.get("whisperStatus") or "pending")
             warnings_list = list(saved.get("warnings") or [])
         else:
@@ -235,7 +267,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             all_candidates = []
             used_ai = False
             engine_used = "faster-whisper"
-            detected_lang = str(settings.get("language") or "en")
+            detected_lang = "und"
             whisper_status = "pending"
             warnings_list = []
 
@@ -295,11 +327,11 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
                     win_start=win_start,
                     win_end=win_end,
                     embedded_global_segments=embedded_global_segments,
-                    whisper_model_size=str(job_cfg.get("whisperModelSize") or "base"),
+                    whisper_model_size=str(job_cfg.get("whisperModelSize") or "small"),
                     whisper_model_path=str(job_cfg.get("whisperModelPath") or ""),
                     whisper_device=str(job_cfg.get("whisperDevice") or "cpu"),
                     whisper_compute_type=str(job_cfg.get("whisperComputeType") or "int8"),
-                    language=str(settings.get("language") or "en"),
+                    language=str(settings.get("language") or "auto"),
                 )
                 engine_used = tr_chunk["engine"]
                 detected_lang = tr_chunk["detectedLanguage"]
@@ -394,6 +426,7 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             save_checkpoint_atomic(
                 checkpoint_path,
                 {
+                    "pipelineVersion": CHECKPOINT_VERSION,
                     "totalChunks": total_chunks,
                     "completedChunkIndices": sorted(completed_indices),
                     "segments": all_segments,
@@ -435,7 +468,12 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
             duration_sec=duration_sec,
             min_dur=min_dur,
             max_dur=max_dur,
+            segments=all_segments,
         )
+
+    # Aggregate Whisper's validated per-chunk labels; do not report the last chunk's
+    # language as if it described an entire multilingual video.
+    detected_lang = summarize_detected_language(all_segments, fallback=detected_lang)
 
     # Stage 9 & 10: Smart Editing (high-precision per-clip speaker reframing + ASS captions) & Rendering
     emit_progress(
@@ -456,11 +494,19 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
         clip_work = os.path.join(work_dir, f"clip_{clip_num:02d}")
         os.makedirs(clip_work, exist_ok=True)
 
+        candidate_start = float(clip_cand["startSec"])
+        candidate_end = float(clip_cand["endSec"])
         c_start, c_end, did_trim = trim_boundary_dead_air(
-            clip_start=float(clip_cand["startSec"]),
-            clip_end=float(clip_cand["endSec"]),
+            clip_start=candidate_start,
+            clip_end=candidate_end,
             silence_intervals=all_silence_intervals,
             enabled=bool(settings.get("silenceRemovalEnabled", True)),
+        )
+        c_start, c_end = _protect_caption_word_boundaries(
+            c_start, c_end, candidate_start, candidate_end, all_segments, duration_sec
+        )
+        did_trim = did_trim and (
+            c_start > candidate_start + 0.01 or c_end < candidate_end - 0.01
         )
         c_dur = max(1.0, round(c_end - c_start, 2))
 
@@ -574,11 +620,19 @@ def run_pipeline(job_cfg: Dict[str, Any], output_json_path: str) -> None:
         "probe": probe,
         "transcriptionEngine": engine_used,
         "detectedLanguage": detected_lang,
-        "transcript": all_segments[:2500],
+        "transcript": [
+            segment
+            for segment in all_segments
+            if segment.get("languageValidated", False) and not segment.get("synthetic")
+        ][:2500],
         "scenes": all_scenes[:1500],
         "diagnostics": {
             "whisperStatus": whisper_status,
             "aiUsed": used_ai,
+            "captionsLanguageValidated": any(
+                segment.get("captionable", False) and segment.get("languageValidated", False)
+                for segment in all_segments
+            ),
             "warnings": warnings_list,
         },
         "clips": rendered_outputs,

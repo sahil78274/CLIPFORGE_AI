@@ -588,7 +588,7 @@ export async function executeProcessingJob(
     video.transcript = result.transcript || [];
     video.scenes = result.scenes || [];
     video.transcriptionEngine = result.transcriptionEngine;
-    video.detectedLanguage = result.detectedLanguage || 'en';
+    video.detectedLanguage = result.detectedLanguage || 'und';
     video.status = 'analyzed';
     await video.save();
 
@@ -706,6 +706,8 @@ export async function executeProcessingJob(
           aiProvider: aiProvider.providerName,
           aiConfigured: aiProvider.isConfigured(),
           whisperStatus: result.diagnostics?.whisperStatus || result.transcriptionEngine,
+          detectedLanguage: result.detectedLanguage || 'und',
+          captionsLanguageValidated: Boolean(result.diagnostics?.captionsLanguageValidated),
           ffmpegAvailable: true,
           warnings: result.diagnostics?.warnings || [],
         },

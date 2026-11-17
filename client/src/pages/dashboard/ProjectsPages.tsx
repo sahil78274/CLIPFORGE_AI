@@ -354,6 +354,14 @@ export const ProjectDetailPage: React.FC = () => {
               {latestJob.diagnostics?.whisperStatus && (
                 <Badge variant="info">ASR: {latestJob.diagnostics.whisperStatus}</Badge>
               )}
+              {latestJob.diagnostics?.detectedLanguage &&
+                latestJob.diagnostics.detectedLanguage !== 'und' && (
+                  <Badge variant="default">Speech: {latestJob.diagnostics.detectedLanguage}</Badge>
+                )}
+              {latestJob.diagnostics?.whisperStatus !== 'pending' &&
+                latestJob.diagnostics?.captionsLanguageValidated === false && (
+                  <Badge variant="warning">Captions withheld: language not verified</Badge>
+                )}
               <Badge variant={latestJob.diagnostics?.aiConfigured ? 'brand' : 'default'}>
                 AI:{' '}
                 {latestJob.diagnostics?.aiConfigured

@@ -270,7 +270,7 @@ export const DEFAULT_PROCESSING_SETTINGS: ProjectProcessingSettings = {
   customMaxDuration: 30,
   clipCount: 3,
   aspectRatio: '9:16',
-  language: 'en',
+  language: 'auto',
   editingIntensity: 'balanced',
   silenceRemovalEnabled: true,
   silenceThresholdDb: -38,

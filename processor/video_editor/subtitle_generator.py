@@ -32,6 +32,33 @@ def _escape_ass_text(txt: str) -> str:
     )
 
 
+def _group_caption_words(
+    words: List[Dict[str, Any]], max_words: int = 4, max_characters: int = 30
+) -> List[List[Dict[str, Any]]]:
+    """Make short, readable caption lines without changing any recognized words."""
+    groups: List[List[Dict[str, Any]]] = []
+    current: List[Dict[str, Any]] = []
+    character_count = 0
+    for word in words:
+        token = str(word.get("word") or "").strip()
+        if not token:
+            continue
+        next_count = character_count + len(token) + (1 if current else 0)
+        if current and (len(current) >= max_words or next_count > max_characters):
+            groups.append(current)
+            current = []
+            character_count = 0
+        current.append(word)
+        character_count += len(token) + (1 if len(current) > 1 else 0)
+        if token.endswith((".", "!", "?", "؟", "۔", "।", "॥", "…")):
+            groups.append(current)
+            current = []
+            character_count = 0
+    if current:
+        groups.append(current)
+    return groups
+
+
 def generate_ass_subtitles(
     ass_path: str,
     play_w: int,
@@ -54,6 +81,9 @@ def generate_ass_subtitles(
     if "mono" in font_raw.lower():
         font_name = "DejaVu Sans Mono"
 
+    # Noto's script-specific font fallback covers Devanagari and Arabic while the
+    # same ASS style preserves sizing, outline, color, and placement across languages.
+    font_name = "Noto Sans" if font_name == "DejaVu Sans" else font_name
     font_size = max(22, min(72, int(caption_style.get("fontSize") or 40)))
     primary_ass = _hex_to_ass_color(str(caption_style.get("textColor") or "#FFFFFF"), 1.0)
     highlight_ass = _hex_to_ass_color(str(caption_style.get("highlightColor") or "#38BDF8"), 1.0)
@@ -124,6 +154,13 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         # Gather words inside [clip_start, clip_end]
         clip_words: List[Dict[str, Any]] = []
         for seg in segments:
+            if (
+                not seg.get("captionable", True)
+                or not seg.get("languageValidated", True)
+                or seg.get("synthetic", False)
+                or seg.get("unverified", False)
+            ):
+                continue
             if seg["end"] <= clip_start or seg["start"] >= clip_end:
                 continue
             words = seg.get("words") or []
@@ -152,12 +189,8 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                             }
                         )
 
-        chunk_size = 4
-        for idx in range(0, len(clip_words), chunk_size):
-            group = [w for w in clip_words[idx : idx + chunk_size] if w["word"]]
-            if not group:
-                continue
-
+        clip_words.sort(key=lambda item: (item["start"], item["end"]))
+        for group in _group_caption_words(clip_words):
             if animation == "word_pop":
                 # Emit one timed event per word in the group with active highlight color!
                 for active_i, active_w in enumerate(group):

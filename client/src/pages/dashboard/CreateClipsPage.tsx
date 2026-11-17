@@ -1938,15 +1938,17 @@ export const CreateClipsPage: React.FC = () => {
               )}
 
               <Select
-                label="Speech Language"
+                label="Language Hint (Whisper Auto-Detects)"
                 value={settings.language}
                 onChange={(e) => setSettings({ ...settings, language: e.target.value })}
                 options={[
-                  { value: 'en', label: 'English (en)' },
-                  { value: 'hi', label: 'Hindi (hi)' },
-                  { value: 'es', label: 'Spanish (es)' },
-                  { value: 'fr', label: 'French (fr)' },
-                  { value: 'auto', label: 'Auto-detect' },
+                  { value: 'auto', label: 'Auto-detect with Whisper (recommended)' },
+                  { value: 'hi', label: 'Hindi (हिन्दी)' },
+                  { value: 'en', label: 'English' },
+                  { value: 'hi-en', label: 'Hinglish (Hindi + English)' },
+                  { value: 'ar', label: 'Arabic (العربية)' },
+                  { value: 'es', label: 'Spanish' },
+                  { value: 'fr', label: 'French' },
                 ]}
               />
 

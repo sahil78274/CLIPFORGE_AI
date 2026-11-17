@@ -222,6 +222,8 @@ export interface ProcessingJobItem {
     aiProvider: string;
     aiConfigured: boolean;
     whisperStatus: string;
+    detectedLanguage: string;
+    captionsLanguageValidated: boolean;
     ffmpegAvailable: boolean;
     warnings: string[];
   };

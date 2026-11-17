@@ -11,15 +11,26 @@ The Python media engine (`processor/main.py`) executes a deterministic 12-stage 
 | 1 | `importing` | `processor/main.py` | Verifies local workspace paths and initializes isolated per-job temp working folders. |
 | 2 | `validating` | `ingestion/validator.py` | Runs `ffprobe -show_format -show_streams` to validate video stream presence, dimensions, FPS, codec, audio stream, and duration bounds (`>= 3s`). |
 | 3 | `extracting_audio` | `transcription/audio_extractor.py` | Extracts mono 16 kHz PCM WAV (`pcm_s16le`) for ASR/acoustic analysis and probes embedded subtitle streams (`subrip` / `mov_text` / `webvtt`). |
-| 4 | `transcribing` | `transcription/transcriber.py` | Runs **Faster-Whisper** (`word_timestamps=True`, Silero VAD) when local/cached CTranslate2 weights are available; falls back seamlessly to embedded subtitle tracks or offline **PocketSphinx** ASR + RMS speech-island detection. |
+| 4 | `transcribing` | `transcription/transcriber.py` | Runs multilingual **Faster-Whisper** with automatic language detection and `task=transcribe` (never translation), beam search, Silero VAD padding, and word timestamps. Detected language is checked against Unicode script / conservative Hinglish cues and retried on conflicts. Embedded subtitles, PocketSphinx, and RMS speech windows are unverified analysis fallbacks and are never burned in as spoken captions. |
 | 5 | `detecting_scenes` | `analysis/scene_detector.py` | Samples frames with OpenCV (`cv2`), computing HSV histogram correlation cuts, frame-difference motion saliency centroids, and Haar frontal-face speaker X coordinates. |
 | 6 | `analyzing_content` | `analysis/content_analyzer.py` | Computes 100ms RMS dBFS energy windows, detects dead-air silence spans, and maps speech rate (WPM), question hooks, and topical transitions across sentences. |
-| 7 | `detecting_moments` | `clip_detection/moment_detector.py` | Builds sentence-aligned candidate windows matching the target duration preset (`15-30s`, `30-45s`, `45-60s`, `60-90s`, or `custom`) and scores Hook Strength, Clarity, Emotional Peak, Pacing, and Completeness (`0–100` Editorial Engagement Estimate). |
-| 8 | `selecting_clips` | `clip_detection/clip_selector.py` | Selects top `N` non-overlapping candidate clips (`overlap < 20%`), expanding to clean non-overlapping timeline windows when short videos have closely spaced moments, sorted chronologically. |
+| 7 | `detecting_moments` | `clip_detection/moment_detector.py` | Builds transcript-boundary candidate windows matching the target duration preset (`15-30s`, `30-45s`, `45-60s`, `60-90s`, or `custom`), aligns AI proposals back to whole transcript segments/words, and scores hook, clarity, emotion, pacing, and completeness. |
+| 8 | `selecting_clips` | `clip_detection/clip_selector.py` | Selects top `N` non-overlapping candidate clips (`overlap < 20%`) from speech-aligned moments and preserves chapter diversity for long videos; fallback windows are used only when transcript boundaries are unavailable. |
 | 9 | `editing` | `video_editor/{reframer,subtitle_generator,audio_chain}.py` | Computes speaker-tracked crop filters (`9:16` → `720x1280`, `1:1` → `720x720`, `16:9` → `1280x720`) + optional subtle zoom, trims boundary dead-air while keeping subtitle timestamps synchronized, generates multi-layer `captions.ass` (`Caption`, `Watermark`, `Banner`), and prepares the audio filterchain (`highpass` + `afftdn` denoising + EBU R128 `loudnorm` + optional synthesized ambient harmonic pad). |
 | 10 | `rendering` | `rendering/renderer.py` | Executes `ffmpeg` (`libx264`, `yuv420p`, `aac 160k`, `ass=captions.ass`, `-movflags +faststart`) in `clip_work_dir` and extracts a `640px` JPEG thumbnail frame. |
 | 11 | `validating_output` | `rendering/output_validator.py` | Verifies every rendered MP4 with `ffprobe` (file size, container streams, exact target aspect dimensions, positive duration). |
 | 12 | `completed` | `workers/videoWorker.ts` | Uploads MP4s & thumbnails to storage, generates platform metadata, persists `Clip` documents, settles reserved credits, creates user notification, and deletes temp working directory. |
+
+---
+
+## Multilingual and timing regression tests
+
+Run `python -m unittest discover -s processor/tests -v` after installing `processor/requirements.txt`.
+The offline fixtures cover Hindi, English, Romanized Hinglish, Arabic, mixed-language labels,
+script-conflict retry/suppression, verbatim caption text, Whisper word offsets, and speech-safe
+moment boundaries. They stub Whisper outputs so they do not measure acoustic word-error rate;
+real ASR validation requires multilingual Faster-Whisper weights and representative voice videos.
+The server integration suite separately exercises generated MP4 ingest/render and chunk recovery.
 
 ---
 

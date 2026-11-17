@@ -66,7 +66,7 @@ export const processingSettingsSchema = z
     customMaxDuration: z.number().min(8).max(240).default(30),
     clipCount: z.number().int().min(1).max(10).default(3),
     aspectRatio: z.enum(['9:16', '1:1', '16:9']).default('9:16'),
-    language: z.string().max(16).default('en'),
+    language: z.string().max(16).default('auto'),
     editingIntensity: z.enum(['subtle', 'balanced', 'dynamic']).default('balanced'),
     silenceRemovalEnabled: z.boolean().default(true),
     silenceThresholdDb: z.number().min(-70).max(-15).default(-38),
